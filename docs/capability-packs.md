@@ -22,7 +22,7 @@ Manifests are trusted: a `runtimeLayer` runs as root when the image is built. Pu
 
 Built in:
 
-- **Web Test Browser**: headless Chromium in the sandbox, shown in the dashboard and driven by the Playwright MCP server.
+- **Web Test Browser**: headless Chromium in the sandbox, shown in the dashboard and driven by the Playwright MCP server. You use it as much as an agent does, so its User-Agent says Chrome with its own version, as it would with a window, and not `HeadlessChrome`. That is all that changes: its debugging port is open on the sandbox's loopback, which is how its frames reach the window and what you type reaches the page, and a site may tell from other things that it is no browser with a window.
 
 An agent finds the sandbox's MCP servers in its own **MCP registry**: the file its maker has it read, in the shape its maker gave it. The workstation's supervisor writes them into every known agent's registry at each start, so that whichever agent you start finds them:
 

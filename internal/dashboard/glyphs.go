@@ -100,6 +100,28 @@ var (
 		"...##...",
 		"........",
 	}
+	// glyphBack and glyphForward are glyphUp, turned: Back and Forward
+	// in a Browser Tab's history.
+	glyphBack = glyph{
+		"........",
+		"..#.....",
+		".##.....",
+		"#######.",
+		"#######.",
+		".##.....",
+		"..#.....",
+		"........",
+	}
+	glyphForward = glyph{
+		"........",
+		".....#..",
+		".....##.",
+		".#######",
+		".#######",
+		".....##.",
+		".....#..",
+		"........",
+	}
 	// glyphAddPane is a page cut in four, with a plus where its last
 	// part would be: Add Pane.
 	glyphAddPane = glyph{

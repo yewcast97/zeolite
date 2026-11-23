@@ -58,8 +58,16 @@ type fakeBackend struct {
 	conns   []*fakeConn
 	openErr error
 	streams []*fakeStream
-	// browserTabs are the Browser Tabs the packs' browser lists.
+	// browserTabs are the Browser Tabs the packs' browser lists, and
+	// links the addresses a new one was opened at, in order; tabErr is
+	// what opening one answers.
 	browserTabs []viewport.BrowserTab
+	links       []string
+	tabErr      error
+	// selected is what the browser's page says is selected in it, and
+	// closeErr what closing a Browser Tab answers.
+	selected string
+	closeErr error
 }
 
 func (b *fakeBackend) Packs() []pack.Manifest { return b.packs }
@@ -197,6 +205,28 @@ func (b *fakeBackend) OpenViewport(_ string, _ pack.Manifest, tab string) (Viewp
 	return s, nil
 }
 
+// OpenBrowserTab opens a Browser Tab in the fake browser, which lists
+// it from then on, the one last opened first.
+func (b *fakeBackend) OpenBrowserTab(sandboxID string, _ pack.Manifest, address string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.links = append(b.links, sandboxID+" "+address)
+	if b.tabErr != nil {
+		return "", b.tabErr
+	}
+	tab := viewport.BrowserTab{ID: "link" + strconv.Itoa(len(b.links)), Title: "Sign in", Address: address}
+	b.browserTabs = append([]viewport.BrowserTab{tab}, b.browserTabs...)
+	return tab.ID, nil
+}
+
+// linksOpened are the sandboxes and addresses a Browser Tab was opened
+// at, in order.
+func (b *fakeBackend) linksOpened() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.links...)
+}
+
 // opens are the Viewport Streams that were opened so far, in order.
 func (b *fakeBackend) opens() []*fakeStream {
 	b.mu.Lock()
@@ -290,6 +320,35 @@ func (s *fakeStream) Tabs(context.Context) ([]viewport.BrowserTab, error) {
 }
 
 func (s *fakeStream) Navigate(address string) error { return s.record("navigate " + address) }
+func (s *fakeStream) Edit(command viewport.EditCommand) error {
+	return s.record("edit " + string(command))
+}
+
+// Selection is what the fake browser's page says is selected in it.
+func (s *fakeStream) Selection(context.Context) (string, error) {
+	s.record("selection")
+	s.backend.mu.Lock()
+	defer s.backend.mu.Unlock()
+	return s.backend.selected, nil
+}
+
+// CloseTab closes the stream's Browser Tab in the fake browser, which
+// lists it no more, and ends the stream; or answers closeErr.
+func (s *fakeStream) CloseTab(context.Context) error {
+	s.record("close tab")
+	s.backend.mu.Lock()
+	err := s.backend.closeErr
+	if err == nil {
+		s.backend.browserTabs = slices.DeleteFunc(s.backend.browserTabs, func(t viewport.BrowserTab) bool { return t.ID == s.tab })
+	}
+	s.backend.mu.Unlock()
+	if err == nil {
+		s.Close()
+	}
+	return err
+}
+func (s *fakeStream) Back(context.Context) error    { return s.record("back") }
+func (s *fakeStream) Forward(context.Context) error { return s.record("forward") }
 
 func (s *fakeStream) timesListed() int {
 	s.mu.Lock()
@@ -327,6 +386,9 @@ func (s *fakeStream) Scroll(x, y, dx, dy float64, _ viewport.Modifiers) error {
 	return s.record("scroll")
 }
 func (s *fakeStream) Text(text string) error { return s.record("text " + text) }
+func (s *fakeStream) Compose(text string, caret int) error {
+	return s.record("compose " + text + " " + strconv.Itoa(caret))
+}
 func (s *fakeStream) PressKey(k viewport.Key, down bool, _ viewport.Modifiers) error {
 	return s.record("key " + string(k))
 }
@@ -336,6 +398,13 @@ func (s *fakeStream) timesAsked() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.asked
+}
+
+// inputsSince are the inputs the stream got after its first n.
+func (s *fakeStream) inputsSince(n int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.inputs[min(n, len(s.inputs)):]...)
 }
 
 func (s *fakeStream) sawInput(what string) bool {
@@ -603,6 +672,10 @@ func gated(id, name string) sandbox.Config {
 	cfg.Gate.ProbeURLs = []string{"https://probe.example.com/ip"}
 	return cfg
 }
+
+// browserWaits is what the viewport of browserPack's pack says until its
+// daemon is ready.
+const browserWaits = "Waiting for Web Test Browser to be ready…"
 
 func browserPack(t *testing.T) pack.Manifest {
 	m, err := pack.Parse([]byte("name: web-test-browser\ntitle: Web Test Browser\ndescription: Headless Chromium.\ndaemonProcess: {command: [chromium], readinessPort: 9222}\nviewportStream: {type: cdp_screencast, port: 9222}\n"))
@@ -1126,7 +1199,7 @@ func TestViewportIsPacedByTheView(t *testing.T) {
 	h := newHarness(t, []sandbox.Config{cfg}, browser)
 	h.d.view("s1").running = cfg
 	h.runs("s1")
-	if !h.tt.HasText("Waiting for Web Test Browser to be ready…") || len(h.backend.streams) != 0 {
+	if !h.tt.HasText(browserWaits) || len(h.backend.streams) != 0 {
 		t.Fatalf("before the daemon is ready the window shows %q", h.tt.Texts())
 	}
 
@@ -1193,7 +1266,7 @@ func TestAPackWithoutAStreamHasNoTab(t *testing.T) {
 
 // A running sandbox shows its Sandbox Terminal, which fills its page
 // beside the sidebar: its Panes, right under the Header. Where a pack
-// has a Viewport Stream, the viewports' tabs stand above the Panes.
+// has a Viewport Stream, its viewport stands above the Panes.
 func TestARunningSandboxShowsItsTerminal(t *testing.T) {
 	browser := browserPack(t)
 	plain, with := gated("s1", "Research"), gated("s2", "Scraper")
@@ -1210,8 +1283,8 @@ func TestARunningSandboxShowsItsTerminal(t *testing.T) {
 	if strip.Y < headerHeight || strip.Y > headerHeight+40 {
 		t.Errorf("Pane 1 starts at %v, not right under a Header of %v", strip.Y, float32(headerHeight))
 	}
-	if h.tt.HasText("Web Test Browser") {
-		t.Errorf("a sandbox without a Viewport Stream shows a viewport's tab: %q", h.tt.Texts())
+	if h.tt.HasText(browserWaits) {
+		t.Errorf("a sandbox without a Viewport Stream shows a viewport: %q", h.tt.Texts())
 	}
 	cards, ok1 := h.tt.Find(sidebarSandboxes)
 	pane, ok2 := h.tt.Find("Pane 1 of Research")
@@ -1220,10 +1293,40 @@ func TestARunningSandboxShowsItsTerminal(t *testing.T) {
 	}
 
 	h.click("Scraper")
-	tab, ok := h.tt.Find("Web Test Browser")
+	over, ok := h.tt.Find(browserWaits)
 	under, ok2 := h.tt.Find("Pane 1")
-	if !ok || !ok2 || tab.Y >= under.Y || tab.Y < headerHeight {
-		t.Fatalf("the viewport's tab is at %+v and Pane 1 at %+v: %q", tab, under, h.tt.Texts())
+	if !ok || !ok2 || over.Y >= under.Y || over.Y < headerHeight {
+		t.Fatalf("the viewport is at %+v and Pane 1 at %+v: %q", over, under, h.tt.Texts())
+	}
+	// One pack's viewport needs nothing to choose it by.
+	if _, ok := h.tt.Find(viewportsLabel); ok {
+		t.Errorf("the one viewport of a sandbox stands under a strip of tabs: %q", h.tt.Texts())
+	}
+}
+
+// Where more than one of a sandbox's packs has a Viewport Stream, a strip
+// over the viewport names each by its pack's title, and a click there
+// shows that one.
+func TestAStripChoosesAmongViewports(t *testing.T) {
+	browser := browserPack(t)
+	second, err := pack.Parse([]byte("name: second-browser\ntitle: Second Browser\ndescription: Headless Chromium.\ndaemonProcess: {command: [chromium], readinessPort: 9333}\nviewportStream: {type: cdp_screencast, port: 9333}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := gated("s1", "Research")
+	cfg.Packs = []string{browser.Name, second.Name}
+	h := newHarness(t, []sandbox.Config{cfg}, browser, second)
+	h.d.view("s1").running = cfg
+	h.runs("s1")
+	strip, ok := h.tt.Find(viewportsLabel)
+	first, ok2 := h.tt.Find(browserWaits)
+	_, ok3 := h.tt.Find("Web Test Browser")
+	if !ok || !ok2 || !ok3 || strip.Y >= first.Y {
+		t.Fatalf("the strip is at %+v and the first viewport at %+v: %q", strip, first, h.tt.Texts())
+	}
+	h.click("Second Browser")
+	if !h.tt.HasText("Waiting for Second Browser to be ready…") || h.tt.HasText(browserWaits) {
+		t.Errorf("a click on the second viewport's tab shows %q", h.tt.Texts())
 	}
 }
 
@@ -3135,8 +3238,10 @@ func TestASessionThatEndsMarksItsSandbox(t *testing.T) {
 
 // The app reads nothing a Terminal Session prints. The dashboard shows a
 // terminal, and takes from it that its program rang, sent a notification
-// or ended: no screen, no history, no title, no folder, and not what a
-// notification says. Only the tests read a screen.
+// or ended, and the address of a link its user Command-clicked there,
+// which one function takes: no screen, no history, no title, no folder,
+// no link the pointer only rests on, and not what a notification says.
+// Only the tests read a screen.
 func TestTheDashboardReadsNoTerminal(t *testing.T) {
 	// What a terminal gives of what its program printed, each a call
 	// without arguments.
@@ -3148,7 +3253,7 @@ func TestTheDashboardReadsNoTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, shows, notified := 0, 0, 0
+	files, shows, notified, links := 0, 0, 0, 0
 	for _, pkg := range pkgs {
 		for name, file := range pkg.Files {
 			if strings.HasSuffix(name, "_test.go") {
@@ -3177,6 +3282,13 @@ func TestTheDashboardReadsNoTerminal(t *testing.T) {
 						switch sel.Sel.Name {
 						case "OnTitle":
 							t.Errorf("%s takes a terminal's title, which its program wrote", name)
+						case "OpenLink":
+							// The one taker of a link: openLink, which
+							// TestALinkOpensInTheSandboxsBrowser holds.
+							links++
+							if fn, ok := n.Rhs[i].(*ast.SelectorExpr); !ok || fn.Sel.Name != "openLink" {
+								t.Errorf("%s: a link that was clicked is taken by something other than openLink", name)
+							}
 						case "OnNotify":
 							notified++
 							fn, ok := n.Rhs[i].(*ast.FuncLit)
@@ -3194,7 +3306,7 @@ func TestTheDashboardReadsNoTerminal(t *testing.T) {
 						}
 					}
 				case *ast.KeyValueExpr:
-					if key, ok := n.Key.(*ast.Ident); ok && (key.Name == "OnTitle" || key.Name == "OnNotify") {
+					if key, ok := n.Key.(*ast.Ident); ok && (key.Name == "OnTitle" || key.Name == "OnNotify" || key.Name == "OpenLink") {
 						t.Errorf("%s sets %s where the test does not look at it", name, key.Name)
 					}
 				}
@@ -3202,8 +3314,110 @@ func TestTheDashboardReadsNoTerminal(t *testing.T) {
 			})
 		}
 	}
-	if files < 10 || shows != 1 || notified != 1 {
-		t.Errorf("read %d files, with %d views of a terminal and %d takers of a notification: the test is not reading the dashboard", files, shows, notified)
+	if files < 10 || shows != 1 || notified != 1 || links != 1 {
+		t.Errorf("read %d files, with %d views of a terminal, %d takers of a notification and %d of a link: the test is not reading the dashboard", files, shows, notified, links)
+	}
+}
+
+// A link that a sandbox's user Command-clicks in a Pane opens in a new
+// Browser Tab of the sandbox's own browser, which is shown: a web
+// address, as it was printed, where the sandbox has a browser. Without
+// the key nothing opens. Any other link, and every link of a sandbox
+// that has no browser, the terminal opens with this Mac's. The address
+// reaches the browser and is in the window only where the browser's own
+// words are: the Address Bar.
+func TestALinkOpensInTheSandboxsBrowser(t *testing.T) {
+	browser := browserPack(t)
+	cfg := gated("s1", "Research")
+	cfg.Packs = []string{browser.Name}
+	h := newHarness(t, []sandbox.Config{cfg, gated("s2", "Plain")}, browser)
+	h.tt.SetSize(1280, 900)
+	home := viewport.BrowserTab{ID: "t1", Title: "Example Domain", Address: "https://example.com/"}
+	h.backend.browse(home)
+	h.d.view("s1").running = cfg
+	h.runs("s1")
+	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
+	v := h.d.view("s1")
+	vp := v.viewportOf(browser)
+	h.settle("the browser's first Browser Tab", func() bool { return vp.address == home.Address && v.panes[0].session != nil })
+
+	// prints fills the screen of the sandbox shown with one hyperlink,
+	// whose words say nothing of where it leads, and click clicks in the
+	// middle of it.
+	prints := func(id, address string) {
+		t.Helper()
+		screen := h.d.view(id).panes[0].session.term
+		h.connOf(id, 0).shell.Write([]byte("\x1b[2J\x1b[H\x1b]8;;" + address + "\x1b\\" + strings.Repeat("Click here to authenticate ", 400) + "\x1b]8;;\x1b\\"))
+		h.settle("the link to be printed", func() bool { return strings.Contains(screen.Text(), "authenticate Click") })
+	}
+	click := func(mods ui.Modifiers, name string) {
+		t.Helper()
+		at, ok := h.tt.Find("Pane 1 of " + name)
+		if !ok {
+			t.Fatalf("no Pane in the window: %q", h.tt.Texts())
+		}
+		h.tt.ClickAtWith(mods, at.X+at.W/2, at.Y+at.H/2+stripHeight/2)
+		h.tt.Frame()
+	}
+
+	// An address with escapes of its own, as one to sign in at has.
+	link := "https://accounts.example.com/o/auth?redirect_uri=http%3A%2F%2Flocalhost%3A8085%2Fcallback&scope=a%20b+c#state"
+	prints("s1", link)
+	click(0, "Research")
+	h.settle("a frame", func() bool { return true })
+	if got := h.backend.linksOpened(); len(got) != 0 || len(h.tt.OpenedURLs()) != 0 {
+		t.Fatalf("a click without Command opened %q in the browser and %q with this Mac's", got, h.tt.OpenedURLs())
+	}
+	click(ui.Super, "Research")
+	h.settle("the link to open in the sandbox's browser", func() bool { return len(h.backend.linksOpened()) == 1 })
+	if got := h.backend.linksOpened(); got[0] != "s1 "+link {
+		t.Fatalf("the browser was asked for %q, want the link as it was printed", got)
+	}
+	h.settle("the new Browser Tab to be shown", func() bool {
+		opens := h.backend.opens()
+		return len(opens) == 2 && opens[1].tab == "link1" && vp.address == link && h.tt.HasText("Sign in")
+	})
+	if opened := h.tt.OpenedURLs(); len(opened) != 0 {
+		t.Errorf("this Mac was asked to open %q", opened)
+	}
+	// The address is the Address Bar's, and nowhere else in the window.
+	for _, text := range h.tt.Texts() {
+		if strings.Contains(text, "accounts.example.com") && text != link {
+			t.Errorf("the window says %q", text)
+		}
+	}
+
+	// A link that is no web address is left to the terminal, which
+	// opens it with this Mac's.
+	prints("s1", "mailto:someone@example.com")
+	click(ui.Super, "Research")
+	h.settle("the link that is no web address to be opened with this Mac's", func() bool { return slices.Equal(h.tt.OpenedURLs(), []string{"mailto:someone@example.com"}) })
+	if got := h.backend.linksOpened(); len(got) != 1 {
+		t.Errorf("the browser was asked for %q", got)
+	}
+
+	// A browser that opens nothing: that is said, over its frames, and
+	// trying again shows the browser as it was.
+	h.backend.mu.Lock()
+	h.backend.tabErr = errors.New("the browser does not answer")
+	h.backend.mu.Unlock()
+	prints("s1", link)
+	click(ui.Super, "Research")
+	h.settle("the failure to be said", func() bool { return h.tt.HasText("The link was not opened: the browser does not answer") })
+	h.click("Try Again")
+	h.settle("the browser again", func() bool { _, ok := h.tt.Find("Web Test Browser viewport"); return ok })
+
+	// A sandbox without a browser: its link is this Mac's to open.
+	h.d.selected = "s2"
+	h.runs("s2")
+	h.settle("the other sandbox's shell", func() bool { return h.d.view("s2").panes[0].session != nil })
+	prints("s2", link)
+	click(ui.Super, "Plain")
+	h.settle("the link of a sandbox without a browser to be opened with this Mac's", func() bool {
+		return slices.Equal(h.tt.OpenedURLs(), []string{"mailto:someone@example.com", link})
+	})
+	if got := h.backend.linksOpened(); len(got) != 2 {
+		t.Errorf("a sandbox without a browser had %q opened in one", got)
 	}
 }
 
@@ -3437,7 +3651,7 @@ func TestCardsKeepTheSidebarsKeys(t *testing.T) {
 }
 
 // At its smallest the window still holds everything: the Cards, the
-// Header with its controls, the viewports' tab, and four Panes, each
+// Header with its controls, the viewport, and four Panes, each
 // with its strip and a terminal that has room.
 func TestTheWindowAtItsSmallest(t *testing.T) {
 	const width, height = 900, 600
@@ -3473,7 +3687,7 @@ func TestTheWindowAtItsSmallest(t *testing.T) {
 	for _, what := range []string{
 		attentionLabel, "GATE LOCKED [Exit Address Mismatch]", "GATE OPEN [203.0.113.7]", "New Sandbox",
 		"A sandbox with quite a long name", addPaneLabel, mcpCallsLabel, "Stop", "Setup", "Clone", "Destroy",
-		"Web Test Browser",
+		browserWaits,
 	} {
 		inside(what)
 	}
@@ -3491,10 +3705,10 @@ func TestTheWindowAtItsSmallest(t *testing.T) {
 			t.Errorf("at %dx%d the terminal of Pane %d is %d columns by %d rows", width, height, i+1, cols, rows)
 		}
 	}
-	// The viewports stand over the Panes, which are two rows of two.
-	tab, one, two, three, four := inside("Web Test Browser"), inside("Pane 1"), inside("Pane 2"), inside("Pane 3"), inside("Pane 4")
-	if tab.Y >= one.Y || two.X <= one.X || two.Y != one.Y || three.Y <= one.Y || three.X != one.X || four.X != two.X || four.Y != three.Y {
-		t.Errorf("the viewports' tab is at %+v and the Panes at %+v, %+v, %+v and %+v", tab, one, two, three, four)
+	// The viewport stands over the Panes, which are two rows of two.
+	over, one, two, three, four := inside(browserWaits), inside("Pane 1"), inside("Pane 2"), inside("Pane 3"), inside("Pane 4")
+	if over.Y >= one.Y || two.X <= one.X || two.Y != one.Y || three.Y <= one.Y || three.X != one.X || four.X != two.X || four.Y != three.Y {
+		t.Errorf("the viewport is at %+v and the Panes at %+v, %+v, %+v and %+v", over, one, two, three, four)
 	}
 }
 
@@ -3561,6 +3775,316 @@ func TestAHoldInTheSetup(t *testing.T) {
 	h.tt.Frame()
 	if facts := h.facts("Research"); strings.Contains(facts, "Hold|") {
 		t.Errorf("with its Hold over the Card says %s", facts)
+	}
+}
+
+// The frames of a viewport take text, which the window gives only to
+// what says that it does: what a key types, and what an input method
+// composes, which shows in the page where the pointer was last pressed.
+// Input reaches the stream in the order it came. Back and Forward stand
+// before the Address Bar, and the keys that go back and forward in a
+// history do the same while the frames have the keyboard.
+func TestTheViewportTakesWhatIsTypedAndGoesBackAndForward(t *testing.T) {
+	browser := browserPack(t)
+	cfg := gated("s1", "Research")
+	cfg.Packs = []string{browser.Name}
+	h := newHarness(t, []sandbox.Config{cfg}, browser)
+	h.tt.SetSize(1280, 900)
+	home := viewport.BrowserTab{ID: "t1", Title: "Example Domain", Address: "https://example.com/"}
+	h.backend.browse(home)
+	h.d.view("s1").running = cfg
+	h.runs("s1")
+	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
+	vp := h.d.view("s1").viewportOf(browser)
+	h.settle("the first frame", func() bool { return vp.bitmap != nil && vp.stream != nil })
+	stream := h.backend.opens()[0]
+	// since waits until the stream got n inputs after its first from,
+	// and gives them.
+	since := func(what string, from, n int) []string {
+		t.Helper()
+		h.settle(what, func() bool { return len(stream.inputsSince(from)) >= n })
+		return stream.inputsSince(from)
+	}
+	count := func() int { return len(stream.inputsSince(0)) }
+
+	box, ok := h.tt.Find("Web Test Browser viewport")
+	if !ok {
+		t.Fatalf("no viewport in the window: %q", h.tt.Texts())
+	}
+	x, y := box.X+box.W/3, box.Y+box.H/4
+	h.tt.ClickAt(x, y)
+	h.settle("the click to reach the stream", func() bool { return count() >= 2 })
+	if active, _ := h.tt.TextInputActive(); !active {
+		t.Fatal("with the keyboard, the frames take no text: the window types none into them")
+	}
+	if caret, composes := h.tt.TextCaret(); !composes || math.Abs(float64(caret.X-x)) > 1 || math.Abs(float64(caret.Y-y)) > 1 {
+		t.Errorf("an input method composes at %+v (%v), and the pointer was pressed at %v, %v", caret, composes, x, y)
+	}
+
+	// Keys that type: each comes as its key, which the stream has no
+	// name for, and then as its text. All of it arrives, in order.
+	from := count()
+	typed := "the quick brown fox jumps over the lazy dog, " + strings.Repeat("again and ", 20)
+	var want []string
+	for _, r := range typed {
+		h.tt.TypeKey(0, ui.KeyA, string(r))
+		want = append(want, "text "+string(r))
+	}
+	if got := since("what was typed to reach the stream", from, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("what was typed reached the stream as %q", got)
+	}
+
+	// What an input method composes, its end, and what it commits.
+	from = count()
+	h.tt.Compose("ni", 2)
+	h.tt.Compose("ni hao", 6)
+	h.tt.Compose("", 0)
+	h.tt.Type("你好")
+	want = []string{"compose ni 2", "compose ni hao 6", "compose  0", "text 你好"}
+	if got := since("the composition to reach the stream", from, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("a composition reached the stream as %q, want %q", got, want)
+	}
+
+	// Back and Forward stand before the Address Bar, in its row.
+	back, ok1 := h.tt.Find(backLabel)
+	forward, ok2 := h.tt.Find(forwardLabel)
+	field, ok3 := h.tt.Find("Address of Web Test Browser")
+	if !ok1 || !ok2 || !ok3 || back.X >= forward.X || forward.X+forward.W > field.X || back.Y < field.Y-field.H || back.Y+back.H > box.Y+1 {
+		t.Fatalf("Back is at %+v, Forward at %+v, the Address Bar at %+v and the frames at %+v", back, forward, field, box)
+	}
+	from = count()
+	h.click(backLabel)
+	h.click(forwardLabel)
+	want = []string{"back", "forward"}
+	if got := since("Back and Forward to reach the stream", from, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("Back and Forward reached the stream as %q", got)
+	}
+
+	// The keys: a mouse's side buttons and a swipe come as Back and
+	// Forward, and Command with a bracket is the keyboard's. Each goes
+	// once, on its press. A bracket alone types.
+	h.tt.ClickAt(x, y)
+	h.settle("the click to reach the stream", func() bool { return count() >= from+4 })
+	from = count()
+	h.tt.Key(0, ui.KeyBack)
+	h.tt.Key(0, ui.KeyForward)
+	h.tt.Key(ui.Super, ui.KeyBracketLeft)
+	h.tt.Key(ui.Super, ui.KeyBracketRight)
+	h.tt.TypeKey(0, ui.KeyBracketLeft, "[")
+	want = []string{"back", "forward", "back", "forward", "text ["}
+	if got := since("the keys of a history to reach the stream", from, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("the keys of a history reached the stream as %q, want %q", got, want)
+	}
+
+	// An address the Browser Tab was sent to is not what the Address
+	// Bar holds once the tab goes back: it holds what the browser lists.
+	h.replace("Address of Web Test Browser", "example.org/docs")
+	h.tt.Key(0, ui.KeyEnter)
+	h.settle("the address to reach the stream", func() bool { return stream.sawInput("navigate https://example.org/docs") })
+	if vp.address != "https://example.org/docs" {
+		t.Fatalf("once sent, the Address Bar holds %q", vp.address)
+	}
+	h.click(backLabel)
+	h.settle("the Address Bar to hold what the browser lists", func() bool { return vp.address == home.Address })
+
+	// With the keyboard in the Address Bar, what is typed is the bar's.
+	from = count()
+	h.replace("Address of Web Test Browser", "example.net")
+	if got := stream.inputsSince(from); len(got) != 0 {
+		t.Errorf("what was typed into the Address Bar reached the page: %q", got)
+	}
+}
+
+// The Edit menu's commands are the page's while the frames have the
+// keyboard: Select All, Undo and Redo are done there; Copy and Cut put
+// what the page says is selected on this Mac's clipboard, and leave it
+// alone where nothing is; Paste types what the clipboard holds. Close
+// Browser Tab, after the Address Bar, closes the one shown, and is there
+// only while the browser has another, which is shown then.
+func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
+	browser := browserPack(t)
+	cfg := gated("s1", "Research")
+	cfg.Packs = []string{browser.Name}
+	h := newHarness(t, []sandbox.Config{cfg}, browser)
+	h.tt.SetSize(1280, 900)
+	home := viewport.BrowserTab{ID: "t1", Title: "Example Domain", Address: "https://example.com/"}
+	h.backend.browse(home)
+	h.d.view("s1").running = cfg
+	h.runs("s1")
+	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
+	vp := h.d.view("s1").viewportOf(browser)
+	h.settle("the first frame", func() bool { return vp.bitmap != nil && vp.stream != nil && vp.address == home.Address })
+	stream := h.backend.opens()[0]
+	count := func() int { return len(stream.inputsSince(0)) }
+	// does performs a command of the Edit menu and gives what reached
+	// the stream for it, which is n inputs.
+	does := func(command string, n int) []string {
+		t.Helper()
+		from := count()
+		h.tt.Command(command)
+		h.settle("the stream to get what "+command+" sends", func() bool { return count() >= from+n })
+		h.settle("a frame", func() bool { return true })
+		return stream.inputsSince(from)
+	}
+	selects := func(text string) {
+		h.backend.mu.Lock()
+		h.backend.selected = text
+		h.backend.mu.Unlock()
+	}
+	box, ok := h.tt.Find("Web Test Browser viewport")
+	if !ok {
+		t.Fatalf("no viewport in the window: %q", h.tt.Texts())
+	}
+	h.tt.ClickAt(box.X+box.W/2, box.Y+box.H/2)
+	h.settle("the click to reach the stream", func() bool { return count() >= 2 })
+
+	for command, want := range map[string]string{"selectAll": "edit selectAll", "undo": "edit undo", "redo": "edit redo"} {
+		if got := does(command, 1); !slices.Equal(got, []string{want}) {
+			t.Errorf("%s reached the stream as %q", command, got)
+		}
+	}
+
+	// Copy: what the page says is selected, on this Mac's clipboard.
+	h.tt.SetClipboard("what was there")
+	selects("你好, page")
+	if got := does("copy", 1); !slices.Equal(got, []string{"selection"}) {
+		t.Errorf("Copy reached the stream as %q", got)
+	}
+	h.settle("the selection to be on the clipboard", func() bool { return h.tt.Clipboard() == "你好, page" })
+	// Nothing selected: the clipboard keeps what it held, and nothing
+	// is cut.
+	selects("")
+	if got := does("cut", 1); !slices.Equal(got, []string{"selection"}) {
+		t.Errorf("Cut with nothing selected reached the stream as %q", got)
+	}
+	if h.tt.Clipboard() != "你好, page" {
+		t.Errorf("with nothing selected, the clipboard holds %q", h.tt.Clipboard())
+	}
+	// Cut: on the clipboard, and then cut in the page.
+	selects("cut words")
+	if got := does("cut", 2); !slices.Equal(got, []string{"selection", "edit cut"}) {
+		t.Errorf("Cut reached the stream as %q", got)
+	}
+	h.settle("what was cut to be on the clipboard", func() bool { return h.tt.Clipboard() == "cut words" })
+
+	// Paste types what the clipboard holds, and nothing where it holds
+	// nothing.
+	h.tt.SetClipboard("a pass phrase, pasted")
+	if got := does("paste", 1); !slices.Equal(got, []string{"text a pass phrase, pasted"}) {
+		t.Errorf("Paste reached the stream as %q", got)
+	}
+	h.tt.SetClipboard("")
+	from := count()
+	h.tt.Command("paste")
+	h.settle("a frame", func() bool { return true })
+	if got := stream.inputsSince(from); len(got) != 0 {
+		t.Errorf("Paste of an empty clipboard reached the stream as %q", got)
+	}
+
+	// With the keyboard in the Address Bar, the commands are the bar's.
+	h.tt.SetClipboard("example.net")
+	h.replace("Address of Web Test Browser", "")
+	from = count()
+	h.tt.Command("paste")
+	h.settle("the Address Bar to take what was pasted", func() bool { return vp.address == "example.net" })
+	if got := stream.inputsSince(from); len(got) != 0 {
+		t.Errorf("what was pasted into the Address Bar reached the page: %q", got)
+	}
+	h.tt.ClickAt(box.X+box.W/2, box.Y+box.H/2)
+
+	// One Browser Tab is not to be closed.
+	if _, ok := h.tt.Find(closeTabLabel); ok {
+		t.Fatalf("the browser's one Browser Tab can be closed: %q", h.tt.Texts())
+	}
+	// With two, Close Browser Tab stands after the Address Bar, in its
+	// row. A browser that does not close it: that is said.
+	docs := viewport.BrowserTab{ID: "t2", Title: "Docs", Address: "https://example.org/docs"}
+	h.backend.browse(docs, home)
+	h.settle("the strip of the Browser Tabs", func() bool { return h.tt.HasText("Docs") })
+	closer, ok1 := h.tt.Find(closeTabLabel)
+	field, ok2 := h.tt.Find("Address of Web Test Browser")
+	if !ok1 || !ok2 || closer.X < field.X+field.W || closer.Y < field.Y-field.H || closer.Y > field.Y+field.H {
+		t.Fatalf("Close Browser Tab is at %+v and the Address Bar at %+v", closer, field)
+	}
+	h.backend.mu.Lock()
+	h.backend.closeErr = errors.New("the browser does not answer")
+	h.backend.mu.Unlock()
+	h.click(closeTabLabel)
+	h.settle("the failure to be said", func() bool {
+		return h.tt.HasText("The Browser Tab was not closed: the browser does not answer")
+	})
+	h.click("Try Again")
+	h.backend.mu.Lock()
+	h.backend.closeErr = nil
+	h.backend.mu.Unlock()
+	h.settle("the browser again", func() bool { _, ok := h.tt.Find(closeTabLabel); return ok })
+
+	// Closed: the other Browser Tab is shown, nothing is said of an
+	// error, and it is the last, which stays.
+	h.click(closeTabLabel)
+	h.settle("the Browser Tab that is left to be shown", func() bool {
+		opens := h.backend.opens()
+		return len(opens) == 2 && opens[1].tab == "t2" && vp.address == docs.Address
+	})
+	if !stream.sawInput("close tab") {
+		t.Errorf("the stream of the Browser Tab shown was not asked to close it: %q", stream.inputsSince(0))
+	}
+	h.settle("the strip to go", func() bool { return !h.tt.HasText("Example Domain") })
+	if _, ok := h.tt.Find(closeTabLabel); ok || h.tt.HasText("Try Again") {
+		t.Errorf("with one Browser Tab left the viewport shows %q", h.tt.Texts())
+	}
+}
+
+// New Browser Tab, after the Address Bar, opens a blank Browser Tab,
+// which is shown, with the keyboard in the Address Bar, emptied: what is
+// typed next is where the tab goes. The bar keeps the keyboard though
+// the strip of the Browser Tabs comes to stand over it.
+func TestANewBrowserTabIsBlankAndAsksWhereToGo(t *testing.T) {
+	browser := browserPack(t)
+	cfg := gated("s1", "Research")
+	cfg.Packs = []string{browser.Name}
+	h := newHarness(t, []sandbox.Config{cfg}, browser)
+	h.tt.SetSize(1280, 900)
+	home := viewport.BrowserTab{ID: "t1", Title: "Example Domain", Address: "https://example.com/"}
+	h.backend.browse(home)
+	h.d.view("s1").running = cfg
+	h.runs("s1")
+	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
+	vp := h.d.view("s1").viewportOf(browser)
+	h.settle("the first frame", func() bool { return vp.bitmap != nil && vp.stream != nil && vp.address == home.Address })
+
+	// It stands after the Address Bar, in its row, with one Browser Tab
+	// too.
+	adder, ok1 := h.tt.Find(newTabLabel)
+	field, ok2 := h.tt.Find("Address of Web Test Browser")
+	if !ok1 || !ok2 || adder.X < field.X+field.W || adder.Y < field.Y-field.H || adder.Y > field.Y+field.H {
+		t.Fatalf("New Browser Tab is at %+v and the Address Bar at %+v: %q", adder, field, h.tt.Texts())
+	}
+	h.click(newTabLabel)
+	h.settle("the blank Browser Tab to be shown", func() bool {
+		opens := h.backend.opens()
+		return len(opens) == 2 && opens[1].tab == "link1" && h.tt.HasText("Sign in")
+	})
+	if got := h.backend.linksOpened(); !slices.Equal(got, []string{"s1 " + blankAddress}) {
+		t.Fatalf("the browser was asked for %q", got)
+	}
+	// What is typed now is the Address Bar's, in the place of what it
+	// held, and the new Browser Tab's stream is sent there.
+	h.settle("the Address Bar to have the keyboard", func() bool { return !vp.toBar })
+	h.settle("a frame", func() bool { return true })
+	if active, _ := h.tt.TextInputActive(); !active || vp.address != "" {
+		t.Fatalf("with a new Browser Tab the Address Bar holds %q, and the window takes text: %v", vp.address, active)
+	}
+	h.tt.Type("example.org/docs")
+	h.tt.Key(0, ui.KeyEnter)
+	blank := h.backend.opens()[1]
+	h.settle("the new Browser Tab to be sent where was typed", func() bool { return blank.sawInput("navigate https://example.org/docs") })
+	if first := h.backend.opens()[0]; first.sawInput("navigate https://example.org/docs") || first.sawInput("text example.org/docs") {
+		t.Errorf("the Browser Tab that was shown before got %q", first.inputsSince(0))
+	}
+	// Both are in the strip now, and the new one can be closed.
+	if _, ok := h.tt.Find(closeTabLabel); !ok {
+		t.Errorf("with two Browser Tabs the viewport shows %q", h.tt.Texts())
 	}
 }
 

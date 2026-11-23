@@ -18,7 +18,7 @@ func TestGlyphsAreWellFormed(t *testing.T) {
 	controls := map[string]glyph{
 		"glyphStart": glyphStart, "glyphStop": glyphStop, "glyphConfigure": glyphConfigure, "glyphClone": glyphClone,
 		"glyphDestroy": glyphDestroy, "glyphAdd": glyphAdd, "glyphRemove": glyphRemove, "glyphClose": glyphClose,
-		"glyphUp": glyphUp, "glyphAddPane": glyphAddPane, "glyphHide": glyphHide, "glyphCalls": glyphCalls, "glyphFolder": glyphFolder,
+		"glyphUp": glyphUp, "glyphBack": glyphBack, "glyphForward": glyphForward, "glyphAddPane": glyphAddPane, "glyphHide": glyphHide, "glyphCalls": glyphCalls, "glyphFolder": glyphFolder,
 		"glyphInfo": glyphInfo, "glyphHand": glyphHand, "glyphCheck": glyphCheck,
 	}
 	check := func(name string, g glyph, side int) {

@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -63,9 +64,21 @@ type Stream struct {
 
 	mu     sync.Mutex // guards writes and nextID
 	nextID int
+	// asked are the commands whose answers are waited for, by their IDs.
+	asking sync.Mutex
+	asked  map[int]chan answer
 	// unacked is the frame last returned by Next. The browser sends the
 	// one after it only once this one is acknowledged.
 	unacked int
+}
+
+// answer is what the browser says to a command: its result, or why it
+// was not done.
+type answer struct {
+	Result json.RawMessage `json:"result"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 // screencastFrame is the Page.screencastFrame event.
@@ -122,7 +135,7 @@ func OpenCDP(ctx context.Context, dial Dial, port int, tab string) (*Stream, err
 		conn.Close()
 		return nil, fmt.Errorf("connecting to the page: %w", err)
 	}
-	s := &Stream{dial: dial, host: host, tab: page, ws: ws, frames: make(chan screencastFrame, 4), done: make(chan struct{})}
+	s := &Stream{dial: dial, host: host, tab: page, ws: ws, frames: make(chan screencastFrame, 4), done: make(chan struct{}), asked: map[int]chan answer{}}
 	go s.read()
 	if chosen {
 		// A Browser Tab behind another draws nothing.
@@ -159,6 +172,43 @@ func (s *Stream) Navigate(address string) error {
 	return s.send("Page.navigate", map[string]any{"url": address})
 }
 
+// CloseTab closes the Browser Tab the stream shows, which ends the
+// stream. Its ID is one the browser listed when the stream was opened.
+func (s *Stream) CloseTab(ctx context.Context) error {
+	if err := askBrowser(ctx, s.dial, s.host, http.MethodGet, "/json/close/"+s.tab, nil); err != nil {
+		return fmt.Errorf("closing the Browser Tab: %w", err)
+	}
+	return nil
+}
+
+// Back sends the Browser Tab the stream shows to the address before the
+// one it is at in its own history, and Forward to the one after. Where
+// its history has none, nothing is sent. The browser is asked for the
+// history as long as ctx lasts.
+func (s *Stream) Back(ctx context.Context) error { return s.along(ctx, -1) }
+
+// Forward is Back the other way.
+func (s *Stream) Forward(ctx context.Context) error { return s.along(ctx, 1) }
+
+// along sends the Browser Tab the stream shows by entries along its
+// history.
+func (s *Stream) along(ctx context.Context, by int) error {
+	var history struct {
+		CurrentIndex int `json:"currentIndex"`
+		Entries      []struct {
+			ID int `json:"id"`
+		} `json:"entries"`
+	}
+	if err := s.ask(ctx, "Page.getNavigationHistory", map[string]any{}, &history); err != nil {
+		return err
+	}
+	to := history.CurrentIndex + by
+	if to < 0 || to >= len(history.Entries) {
+		return nil
+	}
+	return s.send("Page.navigateToHistoryEntry", map[string]any{"entryId": history.Entries[to].ID})
+}
+
 // Address makes an address of what was typed into an Address Bar: as it
 // is where it names its scheme, and otherwise over HTTPS, or over HTTP
 // where it is the sandbox's own loopback, which serves no certificate.
@@ -184,34 +234,38 @@ func Address(typed string) string {
 	return "https://" + typed
 }
 
-// browserTabs lists the browser's pages, asking over HTTP as the
-// protocol has it.
+// NewTab opens a new Browser Tab at an address in the browser, and
+// returns it as the browser has it. port is the browser's debugging port
+// as the browser itself knows it.
+func NewTab(ctx context.Context, dial Dial, port int, address string) (BrowserTab, error) {
+	// The browser unescapes what follows the question mark, once, and
+	// takes that for the address: escaped, an address arrives as it is,
+	// with the escapes of its own. A space is escaped as one, the
+	// browser taking no plus sign for it.
+	escaped := strings.ReplaceAll(url.QueryEscape(address), "+", "%20")
+	var t target
+	if err := askBrowser(ctx, dial, fmt.Sprintf("127.0.0.1:%d", port), http.MethodPut, "/json/new?"+escaped, &t); err != nil {
+		return BrowserTab{}, fmt.Errorf("opening a Browser Tab: %w", err)
+	}
+	if t.Type != "page" || t.ID == "" {
+		return BrowserTab{}, errors.New("opening a Browser Tab: the browser opened none")
+	}
+	return BrowserTab{ID: t.ID, Title: t.Title, Address: t.URL}, nil
+}
+
+// target is one of the things a browser has open, a page among them, as
+// the browser describes it.
+type target struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// browserTabs lists the browser's pages.
 func browserTabs(ctx context.Context, dial Dial, host string) ([]BrowserTab, error) {
-	conn, err := dial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	// The answer is waited for only as long as ctx lasts.
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
-	req, _ := http.NewRequest(http.MethodGet, "http://"+host+"/json/list", nil)
-	req.Close = true
-	if err := req.Write(conn); err != nil {
-		return nil, err
-	}
-	res, err := http.ReadResponse(bufio.NewReader(conn), req)
-	if err != nil {
-		return nil, fmt.Errorf("asking the browser for its pages: %w", err)
-	}
-	defer res.Body.Close()
-	var targets []struct {
-		ID    string `json:"id"`
-		Type  string `json:"type"`
-		Title string `json:"title"`
-		URL   string `json:"url"`
-	}
-	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&targets); err != nil {
+	var targets []target
+	if err := askBrowser(ctx, dial, host, http.MethodGet, "/json/list", &targets); err != nil {
 		return nil, fmt.Errorf("asking the browser for its pages: %w", err)
 	}
 	var tabs []BrowserTab
@@ -223,25 +277,114 @@ func browserTabs(ctx context.Context, dial Dial, host string) ([]BrowserTab, err
 	return tabs, nil
 }
 
-// send sends a command. Its reply is not waited for: commands here either
-// have none worth reading or fail by ending the stream.
+// askBrowser asks the browser over HTTP, as the protocol has it for what
+// is no page's own, on a connection of its own, and reads its answer
+// into result, where there is one: what it says in words is not kept.
+func askBrowser(ctx context.Context, dial Dial, host, method, path string, result any) error {
+	conn, err := dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	// The answer is waited for only as long as ctx lasts.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	req, err := http.NewRequest(method, "http://"+host+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Close = true
+	if err := req.Write(conn); err != nil {
+		return err
+	}
+	res, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("the browser answered %s: %s", res.Status, strings.TrimSpace(string(body)))
+	}
+	if result == nil {
+		return nil
+	}
+	return json.Unmarshal(body, result)
+}
+
+// send sends a command. Its answer is not waited for: most commands here
+// either have none worth reading or fail by ending the stream.
 func (s *Stream) send(method string, params any) error {
+	_, err := s.post(method, params, nil)
+	return err
+}
+
+// post sends a command under an ID of its own, which it returns. The
+// browser's answer to it goes to to, where there is one.
+func (s *Stream) post(method string, params any, to chan answer) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
-	return websocket.JSON.Send(s.ws, map[string]any{"id": s.nextID, "method": method, "params": params})
+	if to != nil {
+		s.asking.Lock()
+		s.asked[s.nextID] = to
+		s.asking.Unlock()
+	}
+	return s.nextID, websocket.JSON.Send(s.ws, map[string]any{"id": s.nextID, "method": method, "params": params})
+}
+
+// ask sends a command and reads the browser's answer to it into result,
+// for which it waits as long as ctx and the stream last.
+func (s *Stream) ask(ctx context.Context, method string, params, result any) error {
+	to := make(chan answer, 1)
+	id, err := s.post(method, params, to)
+	defer func() {
+		s.asking.Lock()
+		delete(s.asked, id)
+		s.asking.Unlock()
+	}()
+	if err != nil {
+		return err
+	}
+	select {
+	case a := <-to:
+		if a.Error != nil {
+			return fmt.Errorf("%s: %s", method, a.Error.Message)
+		}
+		return json.Unmarshal(a.Result, result)
+	case <-s.done:
+		return fmt.Errorf("the stream ended: %w", s.err)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Stream) read() {
 	defer close(s.done)
 	for {
 		var msg struct {
+			ID     int             `json:"id"`
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
+			answer
 		}
 		if err := websocket.JSON.Receive(s.ws, &msg); err != nil {
 			s.err = err
 			return
+		}
+		if msg.ID != 0 {
+			// An answer, which is its asker's or nobody's. The channel
+			// holds the one answer a command has.
+			s.asking.Lock()
+			to := s.asked[msg.ID]
+			s.asking.Unlock()
+			if to != nil {
+				to <- msg.answer
+			}
+			continue
 		}
 		if msg.Method != "Page.screencastFrame" {
 			continue

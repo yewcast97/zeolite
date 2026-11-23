@@ -152,6 +152,9 @@ func (v *sandboxView) openShell(p *pane) {
 			}
 			opts.OnBell = asks
 			opts.OnNotify = func(_, _ string) { asks() }
+			// A link its user Command-clicks opens in the sandbox's own
+			// browser, where it has one.
+			opts.OpenLink = v.openLink
 			term, err := d.newTerminal(opts)
 			if err != nil {
 				conn.Close()

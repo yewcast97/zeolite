@@ -422,3 +422,18 @@ func (b *backend) OpenViewport(sandboxID string, p pack.Manifest, tab string) (d
 	defer cancel()
 	return viewport.OpenCDP(ctx, dial, port, tab)
 }
+
+func (b *backend) OpenBrowserTab(sandboxID string, p pack.Manifest, address string) (string, error) {
+	orch, err := b.orchestrator()
+	if err != nil {
+		return "", err
+	}
+	port := p.ViewportStream.Port
+	dial := func(ctx context.Context) (io.ReadWriteCloser, error) {
+		return orch.DialWorkstation(ctx, sandboxID, port)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tab, err := viewport.NewTab(ctx, dial, port, address)
+	return tab.ID, err
+}

@@ -179,18 +179,24 @@ func (v *sandboxView) streamPacks() []pack.Manifest {
 	return out
 }
 
-// viewportsView is the strip of tabs over what they show: the Viewport
-// Stream of each pack that has one.
+// viewportsLabel is the label of the strip that chooses a viewport.
+const viewportsLabel = "Viewports"
+
+// viewportsView is the Viewport Stream of a pack that has one. Where more
+// than one pack has, a strip of tabs over it names each by its pack's
+// title and chooses which is shown; one pack's needs no strip.
 func (v *sandboxView) viewportsView(c *ui.Context, streams []pack.Manifest) {
 	if v.viewportTab >= len(streams) {
 		v.viewportTab = len(streams) - 1
 	}
-	titles := make([]string, len(streams))
-	for i, m := range streams {
-		titles[i] = m.Title
-	}
 	ui.Column(c).Fill().Children(func() {
-		tabStrip(c, "Viewports", &v.viewportTab, titles)
+		if len(streams) > 1 {
+			titles := make([]string, len(streams))
+			for i, m := range streams {
+				titles[i] = m.Title
+			}
+			tabStrip(c, viewportsLabel, &v.viewportTab, titles)
+		}
 		v.viewportOf(streams[v.viewportTab]).view(c)
 	})
 }

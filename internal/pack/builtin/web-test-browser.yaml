@@ -12,6 +12,18 @@ runtimeLayer:
 
 daemonProcess:
   command:
+    # A headless Chromium calls itself HeadlessChrome in its User-Agent.
+    # This one is its user's as much as an agent's, by its viewport: it
+    # calls itself what it would with a window. A shell starts it, to
+    # put the browser's own version there; what follows the script are
+    # Chromium's arguments.
+    - sh
+    - -c
+    - >-
+      exec chromium
+      --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)
+      Chrome/$(chromium --product-version | cut -d. -f1).0.0.0 Safari/537.36"
+      "$@"
     - chromium
     - --headless=new
     # The workstation drops every capability, so Chromium cannot build its

@@ -55,6 +55,9 @@ type Backend interface {
 	// the Browser Tab of an ID, or on the browser's first where the ID
 	// is empty.
 	OpenViewport(sandboxID string, p pack.Manifest, tab string) (ViewportStream, error)
+	// OpenBrowserTab opens a new Browser Tab at an address in the
+	// browser of a pack in a sandbox, and returns its ID.
+	OpenBrowserTab(sandboxID string, p pack.Manifest, address string) (string, error)
 	// Runtime says what, if anything, is wrong where sandboxes run, and
 	// where the Shared Folders are.
 	Runtime() Runtime
@@ -98,12 +101,26 @@ type ViewportStream interface {
 	Pointer(event viewport.PointerEvent, x, y float64, button, clicks int, mods viewport.Modifiers) error
 	Scroll(x, y, dx, dy float64, mods viewport.Modifiers) error
 	Text(text string) error
+	// Compose shows text in the page as what an input method composes,
+	// its caret after caret of its characters; an empty text ends it.
+	Compose(text string, caret int) error
 	PressKey(key viewport.Key, down bool, mods viewport.Modifiers) error
+	// Edit has the page do a command of an Edit menu, and Selection is
+	// the text selected in it: the page's word.
+	Edit(command viewport.EditCommand) error
+	Selection(ctx context.Context) (string, error)
 	// Tab is the ID of the Browser Tab the stream shows, and Tabs lists
 	// the browser's Browser Tabs as they are now.
 	Tab() string
 	Tabs(ctx context.Context) ([]viewport.BrowserTab, error)
-	// Navigate sends the Browser Tab the stream shows to an address.
+	// Navigate sends the Browser Tab the stream shows to an address,
+	// Back to the one before where it is in its own history, and
+	// Forward to the one after: nowhere, where there is none.
 	Navigate(address string) error
+	Back(ctx context.Context) error
+	Forward(ctx context.Context) error
+	// CloseTab closes the Browser Tab the stream shows, which ends the
+	// stream.
+	CloseTab(ctx context.Context) error
 	Close() error
 }

@@ -14,13 +14,15 @@ import (
 	"zeolite/internal/viewport"
 )
 
-// clickPage is a page that reports where it was clicked, and what was
-// typed into it, to the server it came from.
+// clickPage is a page that reports where it was clicked, what was typed
+// into it and what an input method composed there, to the server it
+// came from.
 const clickPage = `<!doctype html><title>click target</title>
 <body style="margin:0;background:#246"><input id=i autofocus style="position:absolute;left:40px;top:300px">
 <script>
 document.addEventListener("click", e => fetch("/clicked/" + e.clientX + "/" + e.clientY));
 document.getElementById("i").addEventListener("input", e => fetch("/typed/" + encodeURIComponent(e.target.value)));
+document.getElementById("i").addEventListener("compositionupdate", e => fetch("/composed/" + encodeURIComponent(e.data)));
 </script>`
 
 func TestWebTestBrowserViewport(t *testing.T) {
@@ -61,6 +63,12 @@ sleep 1; curl -s http://127.0.0.1:9222/json/list | python3 -c 'import json,sys; 
 		t.Fatalf("opening the test page: %s", out)
 	}
 
+	// The browser calls itself what it would with a window, by its own
+	// version: nothing in its User-Agent says that it has none.
+	if out, _ := inSandbox(cfg.ID, `curl -s http://127.0.0.1:9222/json/version`); !strings.Contains(out, "(KHTML, like Gecko) Chrome/") || strings.Contains(out, "Headless") {
+		t.Errorf("the browser calls itself:\n%s", out)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	dial := func(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -98,6 +106,37 @@ sleep 1; curl -s http://127.0.0.1:9222/json/list | python3 -c 'import json,sys; 
 		log, _ := inSandbox(cfg.ID, "cat /workspace/server.log")
 		return strings.Contains(log, "GET /clicked/200/120") && strings.Contains(log, "GET /typed/%E4%BD%A0%E5%A5%BD%20viewport")
 	})
+
+	// What an input method composes shows in the field as it is
+	// composed; its end leaves nothing of it, and what is committed
+	// stands after what was typed before.
+	stream.Compose("ni hao", 6)
+	waitFor(t, 10*time.Second, "the page to report the composition", func() bool {
+		log, _ := inSandbox(cfg.ID, "cat /workspace/server.log")
+		return strings.Contains(log, "GET /composed/ni%20hao ") && strings.Contains(log, "GET /typed/%E4%BD%A0%E5%A5%BD%20viewportni%20hao ")
+	})
+	stream.Compose("", 0)
+	stream.Text("好")
+	waitFor(t, 10*time.Second, "the page to report what was committed", func() bool {
+		log, _ := inSandbox(cfg.ID, "cat /workspace/server.log")
+		return strings.Contains(log, "GET /typed/%E4%BD%A0%E5%A5%BD%20viewport%E5%A5%BD ")
+	})
+
+	// Select All selects what the field holds, and the selection is
+	// that text; a cut leaves the field empty.
+	stream.Edit(viewport.EditSelectAll)
+	waitFor(t, 10*time.Second, "the field's text to be selected", func() bool {
+		text, err := stream.Selection(ctx)
+		return err == nil && text == "你好 viewport好"
+	})
+	stream.Edit(viewport.EditCut)
+	waitFor(t, 10*time.Second, "the page to report the cut", func() bool {
+		log, _ := inSandbox(cfg.ID, "cat /workspace/server.log")
+		return strings.Contains(log, "GET /typed/ ")
+	})
+	if text, err := stream.Selection(ctx); err != nil || text != "" {
+		t.Errorf("after a cut the selection is %q (%v)", text, err)
+	}
 
 	// More frames come as they are asked for.
 	for i := 0; i < 3; i++ {
@@ -145,11 +184,42 @@ sleep 1; curl -s http://127.0.0.1:9222/json/list | python3 -c 'import json,sys; 
 	}
 	corner(stream, "the page the Browser Tab was sent to", func(r, g, b uint32) bool { return r > g && r > b })
 
-	// A second Browser Tab, a green page: the browser lists both, and a
-	// stream that is asked for one shows that one, while the first
-	// stream's Browser Tab stays what it was.
-	if out, code := inSandbox(cfg.ID, `curl -s -X PUT 'http://127.0.0.1:9222/json/new?http://127.0.0.1:8000/third.html' > /dev/null`); code != 0 {
-		t.Fatal(out)
+	// Back is the page it came from, and Forward the red page again;
+	// at the end of its history Forward leaves the Browser Tab there.
+	listed := func(what, address, title string) {
+		t.Helper()
+		waitFor(t, 10*time.Second, what, func() bool {
+			tabs, err := stream.Tabs(ctx)
+			return err == nil && len(tabs) == 1 && tabs[0].Address == address && tabs[0].Title == title
+		})
+	}
+	if err := stream.Back(ctx); err != nil {
+		t.Fatalf("Back: %v", err)
+	}
+	listed("the browser to list the page before", "http://127.0.0.1:8000/", "click target")
+	corner(stream, "the page before", func(r, g, b uint32) bool { return b > r && b > g })
+	if err := stream.Back(ctx); err != nil {
+		t.Fatalf("Back at the start of the history: %v", err)
+	}
+	if err := stream.Forward(ctx); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	listed("the browser to list the page after", "http://127.0.0.1:8000/second.html", "second")
+	if err := stream.Forward(ctx); err != nil {
+		t.Fatalf("Forward at the end of the history: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	listed("the Browser Tab to stay at the end of its history", "http://127.0.0.1:8000/second.html", "second")
+	corner(stream, "the page after", func(r, g, b uint32) bool { return r > g && r > b })
+
+	// A second Browser Tab, a green page, opened as a link clicked in a
+	// Pane is, at an address with escapes of its own: the browser has it
+	// at that address, as it is. It lists both, and a stream that is
+	// asked for one shows that one, while the first stream's Browser Tab
+	// stays what it was.
+	const linked = "http://127.0.0.1:8000/third.html?redirect_uri=http%3A%2F%2Flocalhost%3A8085%2Fcallback&scope=a%20b+c#state"
+	if tab, err := viewport.NewTab(ctx, dial, browser.ViewportStream.Port, linked); err != nil || tab.ID == "" || tab.Address != linked {
+		t.Fatalf("the Browser Tab opened at %s is %+v (%v)", linked, tab, err)
 	}
 	var third, second string
 	waitFor(t, 10*time.Second, "the browser to list its second Browser Tab", func() bool {
@@ -184,6 +254,16 @@ sleep 1; curl -s http://127.0.0.1:9222/json/list | python3 -c 'import json,sys; 
 	}
 	defer back.Close()
 	corner(back, "the first Browser Tab, chosen again", func(r, g, b uint32) bool { return r > g && r > b })
+	// A stream closes the Browser Tab it shows: the browser lists the
+	// other alone, whose streams go on.
+	if err := other.CloseTab(ctx); err != nil {
+		t.Fatalf("closing the second Browser Tab: %v", err)
+	}
+	waitFor(t, 10*time.Second, "the browser to list one Browser Tab again", func() bool {
+		tabs, err := stream.Tabs(ctx)
+		return err == nil && len(tabs) == 1 && tabs[0].ID == second
+	})
+	corner(back, "the first Browser Tab, once the second was closed", func(r, g, b uint32) bool { return r > g && r > b })
 	if s, err := viewport.OpenCDP(ctx, dial, browser.ViewportStream.Port, "no-such-tab"); err == nil {
 		s.Close()
 		t.Error("a stream was opened on a Browser Tab the browser does not have")
