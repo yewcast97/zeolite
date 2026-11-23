@@ -10,6 +10,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"zeolite/internal/cage"
 	"zeolite/internal/sandbox"
 )
 
@@ -42,28 +43,6 @@ func (g *openingGrid) marksOf() map[int]int {
 	return marks
 }
 
-// The cage is a sodalite cage: twenty-four T-atoms, each at the same
-// distance from the middle and bridged to three others, by thirty-six
-// bridges in all.
-func TestTheCageIsASodaliteCage(t *testing.T) {
-	if len(cageAtoms) != 24 || len(cageBridges) != 36 {
-		t.Fatalf("the cage has %d T-atoms and %d bridges, want 24 and 36", len(cageAtoms), len(cageBridges))
-	}
-	bridged := map[int]int{}
-	for _, b := range cageBridges {
-		bridged[b[0]]++
-		bridged[b[1]]++
-	}
-	for i, a := range cageAtoms {
-		if r := math.Sqrt(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]); math.Abs(r-cageRadius) > 1e-9 {
-			t.Errorf("T-atom %d is %.3f from the middle, want %.3f", i, r, cageRadius)
-		}
-		if bridged[i] != 3 {
-			t.Errorf("T-atom %d has %d bridges, want 3", i, bridged[i])
-		}
-	}
-}
-
 // Through the Opening the whole cage is on the grid, and every agent the
 // app knows has its glyph there, inside the cage: none is left out, none
 // leaves, and each is seen nearly whole at some moment, whatever is in
@@ -74,7 +53,7 @@ func TestTheOpeningShowsEveryKnownAgentInTheCage(t *testing.T) {
 	for at := openingDissolves; at <= openingLasts-openingDissolves; at += 50 * time.Millisecond {
 		g.draw(at)
 		text := g.text()
-		for _, char := range []byte{atomNear, atomFar, bridgeMarks[0], bridgeMarks[len(bridgeMarks)-1]} {
+		for _, char := range []byte{cage.AtomNear, cage.AtomFar, cage.Marks[0], cage.Marks[len(cage.Marks)-1]} {
 			if !strings.ContainsRune(text, rune(char)) {
 				t.Fatalf("after %v the grid holds no %q of the cage", at, char)
 			}
@@ -83,16 +62,16 @@ func TestTheOpeningShowsEveryKnownAgentInTheCage(t *testing.T) {
 			t.Fatalf("after %v the grid does not hold the app's name", at)
 		}
 		// The cage is whole: no T-atom is off the grid.
-		for i, atom := range cageAtoms {
-			if col, row := place(turned(atom, at)); col < 1 || col > openingColumns-2 || row < 0 || row >= openingNameRow-1 {
+		for i, atom := range cage.Atoms {
+			if col, row := openingCage.Place(cage.Turned(atom, at)); col < 1 || col > openingColumns-2 || row < 0 || row >= openingNameRow-1 {
 				t.Fatalf("after %v T-atom %d is at column %.0f, line %.0f: off the grid, or on the name", at, i, col, row)
 			}
 		}
 		marks := g.marksOf()
 		for n, agent := range sandbox.KnownAgents {
 			p := glyphAt(n, at)
-			if far := math.Sqrt(p[0]*p[0] + p[1]*p[1] + p[2]*p[2]); far >= cageRoom {
-				t.Fatalf("after %v the glyph of %s is %.2f from the middle: outside the cage, whose faces are %.2f from it", at, agent.Title, far, cageRoom)
+			if far := math.Sqrt(p[0]*p[0] + p[1]*p[1] + p[2]*p[2]); far >= cage.Room {
+				t.Fatalf("after %v the glyph of %s is %.2f from the middle: outside the cage, whose faces are %.2f from it", at, agent.Title, far, cage.Room)
 			}
 			if marks[n] == 0 {
 				t.Errorf("after %v no mark of the glyph of %s is on the grid", at, agent.Title)
@@ -133,7 +112,7 @@ func TestTheOpeningMoves(t *testing.T) {
 	if g.text() == before {
 		t.Error("the Opening is the same a fifth of a second later")
 	}
-	if turned(cageAtoms[0], at) == turned(cageAtoms[0], later) {
+	if cage.Turned(cage.Atoms[0], at) == cage.Turned(cage.Atoms[0], later) {
 		t.Error("the cage did not turn")
 	}
 	for n, agent := range sandbox.KnownAgents {

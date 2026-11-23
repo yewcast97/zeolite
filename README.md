@@ -1,4 +1,4 @@
-<img src="resources/icon.png" width="128" alt="The logo: a sodalite cage, the unit a zeolite's framework is built of, drawn in characters whose weights say how near each part is">
+<img src="docs/masthead.gif" width="848" alt="A sodalite cage, the unit a zeolite's framework is built of, turning, drawn in characters whose weights say how near each part is; beside it the name zeolite, in italic letters made of characters that tremble">
 
 # zeolite
 
@@ -24,7 +24,7 @@ colima start --profile zeolite --cpu 4 --memory 8 --disk 40 --vm-type vz --activ
 Then:
 
 ```sh
-go generate ./...                     # builds the in-container binaries, the Carrier and the GPU Shim, and draws the icon; needed before anything else compiles
+go generate ./...                     # builds the in-container binaries, the Carrier and the GPU Shim, and draws the icon and the Masthead; needed before anything else compiles
 go tool mygo dev                      # run the app
 go tool mygo build                    # package build/darwin-arm64/zeolite.app
 ```

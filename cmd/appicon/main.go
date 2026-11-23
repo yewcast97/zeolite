@@ -17,12 +17,9 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gomonobold"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
 	"golang.org/x/image/vector"
 
+	"zeolite/internal/chargrid"
 	"zeolite/internal/palette"
 )
 
@@ -94,12 +91,7 @@ const (
 // The marks stand as text does across, and closer down: a line is as
 // high as rowPitch of the font's size, so that the lines close up into
 // one surface.
-const (
-	rowPitch = 0.86
-	// characterWidth is the width of a character of Go Mono, as a part of
-	// the font's size.
-	characterWidth = 0.6
-)
+const rowPitch = 0.86
 
 func main() {
 	if len(os.Args) != 2 {
@@ -152,33 +144,22 @@ func icon() (*image.NRGBA, error) {
 	for _, l := range lines {
 		columns = max(columns, len(l))
 	}
-	parsed, err := opentype.Parse(gomonobold.TTF)
-	if err != nil {
-		return nil, err
-	}
 	const side = size - 2*margin - 2*room
 	cellW := float64(side) / float64(columns)
-	points := cellW / characterWidth
-	cellH := points * rowPitch
-	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: points, DPI: 72, Hinting: font.HintingNone})
+	face, err := chargrid.NewFace(cellW)
 	if err != nil {
 		return nil, err
 	}
+	cellH := face.Size * rowPitch
 	left := float64(margin + room)
 	top := (size - float64(len(lines))*cellH) / 2
-	metrics := face.Metrics()
-	ascent := float64(metrics.Ascent) / 64
-	glyph := float64(metrics.Ascent+metrics.Descent) / 64
-
-	d := font.Drawer{Dst: img, Src: image.NewUniform(rgb(palette.Accent)), Face: face}
+	accent := image.NewUniform(rgb(palette.Accent))
 	for row, line := range lines {
 		for col, r := range line {
-			x, y := left+float64(col)*cellW, top+float64(row)*cellH
 			if r == nothing {
 				continue
 			}
-			d.Dot = fixed.Point26_6{X: fixed.Int26_6(x * 64), Y: fixed.Int26_6((y + (cellH-glyph)/2 + ascent) * 64)}
-			d.DrawString(string(r))
+			face.Draw(img, accent, left+float64(col)*cellW, top+float64(row)*cellH, cellH, r)
 		}
 	}
 	return img, nil

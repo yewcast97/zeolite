@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"zeolite/internal/cage"
 	"zeolite/internal/sandbox"
 )
 
@@ -36,16 +37,12 @@ const (
 	// how long its characters take to come and, at its end, to go.
 	openingLasts     = 3600 * time.Millisecond
 	openingDissolves = 450 * time.Millisecond
-	// openingTurn is the time the cage takes to turn once, and
-	// openingTilt how far it leans towards whoever looks, in radians.
-	openingTurn = 14 * time.Second
-	openingTilt = 0.38
-	// openingEye is how far whoever looks stands from the cage's middle,
-	// in the cage's own measure: what is near is drawn larger.
-	openingEye = 12.0
 	// openingFrameRate is how many frames a second the Opening draws.
 	openingFrameRate = 30
 )
+
+// openingCage is where the cage stands on the Opening's grid.
+var openingCage = cage.Grid{Column: openingColumns / 2, Row: openingCageRow, Unit: openingUnit}
 
 // openingName is the app's name, under the cage, a space between its
 // letters.
@@ -164,55 +161,6 @@ type openingGrid struct {
 	depth []float64
 }
 
-// The cage is a sodalite cage, as the icon's is: a truncated octahedron.
-// Its twenty-four T-atoms stand where the three coordinates are 0, 1 and
-// 2 in any order and with any signs, and its thirty-six oxygen bridges
-// join the atoms that are nearest each other.
-var cageAtoms, cageBridges = sodaliteCage()
-
-// cageRadius is how far a T-atom is from the cage's middle, and
-// cageRoom how far its nearest face is: what is nearer the middle than
-// that is inside the cage.
-var (
-	cageRadius = math.Sqrt(5)
-	cageRoom   = math.Sqrt(3)
-)
-
-func sodaliteCage() (atoms [][3]float64, bridges [][2]int) {
-	for none := 0; none < 3; none++ {
-		for _, one := range []int{(none + 1) % 3, (none + 2) % 3} {
-			two := 3 - none - one
-			for _, a := range []float64{-1, 1} {
-				for _, b := range []float64{-2, 2} {
-					var atom [3]float64
-					atom[one], atom[two] = a, b
-					atoms = append(atoms, atom)
-				}
-			}
-		}
-	}
-	for i, a := range atoms {
-		for j := i + 1; j < len(atoms); j++ {
-			b := atoms[j]
-			if d := (a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1]) + (a[2]-b[2])*(a[2]-b[2]); d < 2.01 {
-				bridges = append(bridges, [2]int{i, j})
-			}
-		}
-	}
-	return atoms, bridges
-}
-
-// bridgeMarks are the characters a bridge is drawn with, from the
-// farthest to the nearest: the icon's, lightest to heaviest.
-const bridgeMarks = "!:;+*xX#"
-
-// The characters of a T-atom, in the near half of the cage and in the
-// far one.
-const (
-	atomNear = '@'
-	atomFar  = '%'
-)
-
 // The characters of a glyph. A line of characters is as high as two of
 // its characters are wide, so a character stands for a cell of the
 // glyph's art and the cell under it: both marked, the upper alone, or
@@ -244,23 +192,6 @@ func glyphLines(art glyph) [][]byte {
 	return lines
 }
 
-// turned is a point of the cage as it is seen after the cage turned for
-// a time: x to the right, y up, z towards whoever looks.
-func turned(p [3]float64, elapsed time.Duration) [3]float64 {
-	angle := 2 * math.Pi * elapsed.Seconds() / openingTurn.Seconds()
-	sin, cos := math.Sincos(angle)
-	x, y, z := p[0]*cos+p[2]*sin, p[1], -p[0]*sin+p[2]*cos
-	sin, cos = math.Sincos(openingTilt)
-	return [3]float64{x, y*cos - z*sin, y*sin + z*cos}
-}
-
-// place is where on the grid a point is seen, in characters across and
-// lines down, each a fraction.
-func place(p [3]float64) (col, row float64) {
-	near := openingEye / (openingEye - p[2])
-	return openingColumns/2 + p[0]*near*2*openingUnit, openingCageRow - p[1]*near*openingUnit
-}
-
 // glyphAt is where the glyph of the agent with this number is at a
 // time, in the cage's measure, as it is seen: the glyphs go round the
 // cage's middle one after another, against the cage's turn, as fish go
@@ -270,9 +201,7 @@ func glyphAt(n int, elapsed time.Duration) [3]float64 {
 	t, i := elapsed.Seconds(), float64(n)
 	around := 2*math.Pi*i/float64(len(sandbox.KnownAgents)) - 0.9*t + 0.25*math.Sin(1.3*t+i)
 	out := 1.05 + 0.2*math.Sin(0.8*t+2*i)
-	x, y, z := out*math.Cos(around), 0.75*math.Sin(1.1*t+2.4*i), out*math.Sin(around)
-	sin, cos := math.Sincos(openingTilt)
-	return [3]float64{x, y*cos - z*sin, y*sin + z*cos}
+	return cage.Leaned([3]float64{out * math.Cos(around), 0.75 * math.Sin(1.1*t+2.4*i), out * math.Sin(around)})
 }
 
 // glyphBends is how far a line of a glyph is moved to the side at a
@@ -314,38 +243,17 @@ func (g *openingGrid) draw(elapsed time.Duration) {
 		g.cells[i], g.depth[i] = openingCell{}, math.Inf(-1)
 	}
 
-	// The bridges, each a line of characters from one atom to the next.
-	for _, bridge := range cageBridges {
-		a, b := turned(cageAtoms[bridge[0]], elapsed), turned(cageAtoms[bridge[1]], elapsed)
-		colA, rowA := place(a)
-		colB, rowB := place(b)
-		steps := int(2*math.Max(math.Abs(colB-colA), math.Abs(rowB-rowA))) + 1
-		for s := 0; s <= steps; s++ {
-			f := float64(s) / float64(steps)
-			depth := a[2] + (b[2]-a[2])*f
-			weight := int((depth + cageRadius) / (2 * cageRadius) * float64(len(bridgeMarks)))
-			weight = min(max(weight, 0), len(bridgeMarks)-1)
-			g.put(int(math.Round(colA+(colB-colA)*f)), int(math.Round(rowA+(rowB-rowA)*f)), depth, openingCell{char: bridgeMarks[weight]})
-		}
-	}
-	// The atoms, each a knot two characters wide over its bridges' ends.
-	for _, atom := range cageAtoms {
-		p := turned(atom, elapsed)
-		col, row := place(p)
-		char := byte(atomNear)
-		if p[2] < 0 {
-			char = atomFar
-		}
-		for dx := -1; dx <= 0; dx++ {
-			g.put(int(math.Round(col))+dx, int(math.Round(row)), p[2]+0.1, openingCell{char: char})
-		}
-	}
+	// The cage, as the Masthead's is: where it stands on this grid is the
+	// theme's.
+	openingCage.Draw(elapsed, func(col, row int, depth float64, char byte) {
+		g.put(col, row, depth, openingCell{char: char})
+	})
 	// The glyphs, and around each a rim of nothing, which keeps the glyph
 	// apart from what is behind it.
 	for n, agent := range sandbox.KnownAgents {
 		lines := glyphLines(agentGlyphs[agent.Executable])
 		p := glyphAt(n, elapsed)
-		col, row := place(p)
+		col, row := openingCage.Place(p)
 		left, top := int(math.Round(col))-len(lines[0])/2, int(math.Round(row))-len(lines)/2
 		tone := toneNear
 		if p[2] < 0 {
