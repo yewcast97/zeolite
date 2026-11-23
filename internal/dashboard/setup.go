@@ -65,7 +65,7 @@ func (v *sandboxView) setupView(c *ui.Context) {
 					v.networkCheck(c, row)
 					v.leavesByField(c, row)
 					ui.Field(c, "Probe URLs", func() {
-						row("Probe URLs", "HTTPS endpoints that answer with the caller's address as plain text, one per line. All are asked together, every two seconds, and every second while none has answered: the first to answer with an expected exit address keeps the gate open, and one that answers with another locks it.", ui.Start, func() {
+						row("Probe URLs", "HTTPS endpoints that answer with the caller's address as plain text, one per line. Each is asked every two seconds, and every second while an answer is overdue. An answer with an expected exit address keeps the gate open; one with another locks it.", ui.Start, func() {
 							c.Key("probe")
 							ui.TextArea(c, &d.probeURLs).Height(t.Space(18)).Grow(1)
 						})

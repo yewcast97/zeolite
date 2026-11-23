@@ -3526,10 +3526,10 @@ func TestAHoldInTheSetup(t *testing.T) {
 	h := newHarness(t, []sandbox.Config{cfg})
 	texts := h.told("About Hold")
 	for _, want := range []string{
-		"locked 5 seconds after the last probe", "With a Hold it is locked sooner, when two answers in a row are overdue, about two seconds after the last with three probe URLs, and cuts nothing",
+		"locked 5 seconds after the last probe", "With one it is locked sooner, about two seconds after that probe with three probe URLs, and cuts nothing",
 		"are kept for 30 seconds from that probe", "What they receive still arrives",
-		"What the sandbox sends on them waits on this Mac", "makes no new connection and asks no name",
-		"Nothing the sandbox sends leaves meanwhile", "that shows the new one", "ends the Hold at once",
+		"What the sandbox sends on them waits on this Mac until a probe is answered again", "makes no new connection and asks no name",
+		"which shows a new exit address if it changed meanwhile", "ends the Hold at once",
 	} {
 		if !strings.Contains(texts, want) {
 			t.Errorf("what is said of a Hold lacks %q: %s", want, texts)
