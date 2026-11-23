@@ -1,0 +1,46 @@
+name: web-test-browser
+title: Web Test Browser
+description: Headless Chromium for testing web apps, driven over the Chrome DevTools Protocol.
+
+runtimeLayer:
+  packages:
+    - chromium
+    - fonts-liberation
+    - fonts-noto-cjk
+  run:
+    - npm install --global @playwright/mcp@0.0.85
+
+daemonProcess:
+  command:
+    - chromium
+    - --headless=new
+    # The workstation drops every capability, so Chromium cannot build its
+    # own sandbox; the container is the boundary.
+    - --no-sandbox
+    # QUIC is UDP, which the gate never passes: without this, pages wait
+    # for it to time out.
+    - --disable-quic
+    # WebGL without a GPU.
+    - --use-gl=angle
+    - --use-angle=swiftshader
+    - --enable-unsafe-swiftshader
+    - --remote-debugging-address=127.0.0.1
+    - --remote-debugging-port=9222
+    # The dashboard's Viewport Stream connects from this origin, through
+    # a connection that ends on the sandbox's loopback.
+    - --remote-allow-origins=http://127.0.0.1:9222
+    - --user-data-dir=/tmp/chromium
+    - --window-size=1280,720
+    - about:blank
+  readinessPort: 9222
+
+mcpBridge:
+  name: browser
+  command:
+    - playwright-mcp
+    - --cdp-endpoint
+    - http://127.0.0.1:9222
+
+viewportStream:
+  type: cdp_screencast
+  port: 9222

@@ -1,0 +1,3 @@
+;; This Mac's name, for a sandbox whose Host Tools are given it: uname()
+;; fails without it, and with it Python's platform module and numpy.
+(allow sysctl-read (sysctl-name "kern.hostname"))

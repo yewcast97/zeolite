@@ -1,0 +1,19 @@
+# Build output of `go tool mygo build` and `go tool mygo dev`.
+/build/
+/.mygo/
+
+# Binaries of cmd/, built by `go generate ./...`: the ones that run in a
+# sandbox's containers, and the Carrier that runs on this Mac, with a
+# copy of its wall. And the GPU Shim, built from its C source.
+/internal/sandboximage/bin/
+/internal/carrier/bin/
+/internal/hosttool/bin/
+
+# The tests' virtual Interface: what its owner wrote down of it, and the
+# fixture that reads that. Never tracked. See GLOSSARY.md.
+/instance_test
+/integration/virtualinterface_fixture_test.go
+
+# The experiment's API key, never tracked.
+/.env
+.DS_Store

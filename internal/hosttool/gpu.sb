@@ -1,0 +1,44 @@
+;; The GPU, for a sandbox whose Host Tools are given it: this Mac's
+;; graphics device and the surfaces drawn on it. No window, no display,
+;; no other device.
+(allow iokit-open
+       (iokit-user-client-class "AGXDeviceUserClient" "AGXSharedUserClient" "IOSurfaceRootUserClient" "IOSurfaceAcceleratorClient"))
+(allow iokit-open-service (iokit-registry-entry-class "IOAccelerator" "IOSurfaceRoot"))
+(allow iokit-open-user-client (iokit-connection "IOAccelerator")
+       (iokit-user-client-class "IOAccelerationUserClient" "IOSurfaceSendRight"))
+;; What Metal reads of the graphics device to find its driver: these
+;; properties, which say nothing of this Mac but its chip.
+(allow iokit-get-properties
+       (iokit-property "MetalPluginName" "MetalPluginClassName" "MetalStatisticsName" "MetalCoalesce"
+                       "IOGLBundleName" "IOGLESBundleName" "IOClassNameOverride" "IOClass" "IOProviderClass"
+                       "IOMatchCategory" "IOSourceVersion" "GPUConfigurationVariable" "PerformanceStatistics" "IOSurfaceAcceleratorCapabilitiesDict"))
+(allow sysctl-read (sysctl-name "hw.cpusubfamily" "kern.hv_vmm_present"))
+(allow user-preference-read (preference-domain "com.apple.gpu") (preference-domain "com.apple.Metal"))
+(allow mach-lookup (global-name "com.apple.gpumemd.source") (global-name "com.apple.cvmsServ"))
+
+;; GPU is the folder where the app keeps what such a tool is given: the
+;; GPU Shim, which is loaded into it; the Shell Startup File, by which
+;; bash and zsh set the loader's variable again for what they start; and
+;; the Homebrew Wrappers, which do so for a program of Homebrew's started
+;; by its name. A tool reads and runs what is there, and writes none of it.
+(allow file-read* file-test-existence file-map-executable process-exec (subpath (param "GPU")))
+(allow file-read-metadata file-test-existence (path-ancestors (param "GPU")))
+
+;; The shader compiler, and the hardware's video encoder and decoder:
+;; services of the system's, each started for the tool that asks.
+(allow mach-lookup
+       (global-name "com.apple.MTLCompilerService")
+       (xpc-service-name "com.apple.MTLCompilerService")
+       (xpc-service-name "com.apple.coremedia.videoencoder")
+       (xpc-service-name "com.apple.coremedia.videodecoder"))
+;; The compiler reads and writes for the tool, by an extension the tool
+;; issues: whatever folder the extension names, the compiler then has,
+;; and it prints what it could not compile. So a tool issues one for what
+;; it may itself read, and to write for its two folders, and for nothing
+;; else: Metal asks for all of "/", and is refused.
+(allow file-issue-extension
+       (require-all (extension-class "com.apple.app-sandbox.read")
+                    (require-any (subpath "/Applications") (subpath (param "SHARED")) (subpath (param "SCRATCH")))))
+(allow file-issue-extension
+       (require-all (extension-class "com.apple.app-sandbox.read-write")
+                    (require-any (subpath (param "SHARED")) (subpath (param "SCRATCH")))))

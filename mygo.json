@@ -1,0 +1,10 @@
+{
+  "name": "zeolite",
+  "identifier": "io.github.yewcast97.zeolite",
+  "version": "0.1.0",
+  "out": "build",
+  "macos": {
+    "minimumSystemVersion": "13.0"
+  },
+  "buildCommand": "go generate ./..."
+}

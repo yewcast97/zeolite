@@ -1,0 +1,27 @@
+; The Carrier Wall: the Seatbelt profile a Carrier runs under.
+;
+; A Carrier holds a sandbox's traffic on this Mac: every packet the
+; sandbox sends becomes a socket of this process. Under the wall the
+; process can make connections out, and nothing else of this Mac: it
+; reads no file of the user's, writes none, runs no program, listens on
+; nothing, and reaches no address of this Mac itself.
+;
+; The app starts it as
+;
+;   sandbox-exec -D CARRIER=<the Carrier's own path> -p <this profile> <that path>
+;
+; In a profile the last rule that matches decides.
+(version 1)
+(deny default)
+; The Carrier itself is what runs, and nothing else.
+(allow process-exec (literal (param "CARRIER")))
+(allow file-read* (literal (param "CARRIER")))
+; What any program of this Mac is loaded from, and nothing of the user's.
+(allow file-read* (literal "/") (subpath "/usr/lib") (subpath "/System"))
+(allow file-read-metadata)
+; Which interfaces this Mac has.
+(allow sysctl-read)
+; Connections out, to anywhere but this Mac itself: "localhost" is every
+; address this Mac has, not 127.0.0.1 alone.
+(allow network-outbound (remote ip "*:*"))
+(deny network-outbound (remote ip "localhost:*"))

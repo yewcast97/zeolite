@@ -1,0 +1,94 @@
+(version 1)
+;; The Host Tool Wall. A Host Tool is a program of this Mac that a
+;; sandbox's agent runs: everything is denied it unless a rule below
+;; allows it. SHARED is the sandbox's Shared Folder and SCRATCH its Host
+;; Tool Scratch; the two are all it writes.
+(deny default)
+
+;; --- Processes: its own children, and nothing else of this Mac ----------
+(allow process-fork)
+(allow process-exec
+       (subpath "/usr/bin") (subpath "/bin") (subpath "/usr/libexec")
+       (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/libexec")
+       (subpath "/Library/Developer/CommandLineTools")
+       (subpath "/Applications")
+       (subpath (param "SHARED")) (subpath (param "SCRATCH")))
+(allow signal (target same-sandbox))
+;; What a process may learn of another is not covered by "deny default":
+;; it is denied here, and then allowed of the tool's own processes.
+(deny process-info*)
+(allow process-info* (target self))
+(allow process-info-pidinfo (target same-sandbox))
+(allow process-codesigning-status* (target self))
+
+;; --- Reading: the system, the public software, the two folders ----------
+(allow file-read* file-test-existence file-map-executable
+       (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share")
+       (subpath "/usr/bin") (subpath "/bin") (subpath "/usr/libexec")
+       (subpath "/Library/Apple")
+       (subpath "/Library/Developer/CommandLineTools")
+       (subpath "/Applications")
+       (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/libexec")
+       (subpath "/opt/homebrew/lib") (subpath "/opt/homebrew/share") (subpath "/opt/homebrew/include") (subpath "/opt/homebrew/Frameworks")
+       (subpath (param "SHARED")) (subpath (param "SCRATCH")))
+(allow file-read* file-test-existence
+       (literal "/")
+       (literal "/dev/random") (literal "/dev/urandom")
+       (literal "/private/etc/passwd") (literal "/private/etc/group")
+       (literal "/private/etc/protocols") (literal "/private/etc/services")
+       (literal "/private/etc/ssl/cert.pem") (literal "/private/etc/ssl/openssl.cnf")
+       (literal "/private/var/db/xcode_select_link")
+       (literal "/private/var/select/sh"))
+;; The names of the folders that lead to what may be read, and no
+;; listing of them.
+(allow file-read-metadata file-test-existence
+       (literal "/etc") (literal "/tmp") (literal "/var") (literal "/private")
+       (literal "/private/etc") (literal "/private/var") (literal "/private/tmp")
+       (literal "/usr") (literal "/Library") (literal "/Library/Developer") (literal "/opt") (literal "/opt/homebrew")
+       (path-ancestors (param "SHARED")) (path-ancestors (param "SCRATCH")))
+
+;; --- Writing: the two folders -------------------------------------------
+(allow file-write* (subpath (param "SHARED")) (subpath (param "SCRATCH")))
+(allow file-read* file-write-data file-ioctl
+       (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper"))
+
+;; --- What a program needs of the kernel, by name ------------------------
+(allow sysctl-read
+       (sysctl-name "hw.ncpu" "hw.activecpu" "hw.physicalcpu" "hw.physicalcpu_max" "hw.logicalcpu" "hw.logicalcpu_max"
+                    "hw.memsize" "hw.pagesize" "hw.pagesize_compat" "hw.cputype" "hw.cpusubtype" "hw.cpufamily" "hw.cpu64bit_capable"
+                    "hw.byteorder" "hw.cachelinesize" "hw.l1icachesize" "hw.l1dcachesize" "hw.l2cachesize" "hw.l3cachesize"
+                    "hw.machine" "hw.model" "hw.targettype" "hw.nperflevels"
+                    "kern.osrelease" "kern.ostype" "kern.osversion" "kern.osproductversion" "kern.osproductversioncompat" "kern.version"
+                    "kern.argmax" "kern.maxfilesperproc" "kern.maxproc" "kern.ngroups" "kern.usrstack64" "kern.secure_kernel"
+                    "kern.iossupportversion" "kern.osvariant_status" "kern.willshutdown" "kern.bootargs"
+                    "machdep.cpu.brand_string" "machdep.ptrauth_enabled" "sysctl.proc_translated"
+                    "vm.loadavg" "kern.proc_native")
+       (sysctl-name-prefix "hw.optional.") (sysctl-name-prefix "hw.perflevel")
+       (sysctl-name-prefix "machdep.cpu."))
+;; The semaphores Python's multiprocessing makes, by their names. They
+;; are this Mac's, not the tool's own: two tools that agree on a name can
+;; signal each other through one.
+(allow ipc-posix-sem (ipc-posix-name-regex #"^/?mp-"))
+
+;; --- What the rules above let through, closed by name -------------------
+;; Under /System are mounted this Mac's other volumes: its data, by
+;; another path, and those it starts from, one in a folder named for this
+;; Mac alone. Of them a tool reads the system's own libraries, and no more.
+(deny file-read* file-test-existence file-map-executable (subpath "/System/Volumes"))
+(allow file-read* file-test-existence file-map-executable (subpath "/System/Volumes/Preboot/Cryptexes"))
+(allow file-read-metadata file-test-existence
+       (literal "/System/Volumes") (literal "/System/Volumes/Preboot"))
+
+;; --- What "deny default" leaves open, closed by name --------------------
+;; The hardware's registry holds its serial number, its UUID and its
+;; network cards' addresses; the firmware's variables hold more.
+(deny iokit-get-properties)
+(deny iokit-open)
+(deny nvram*)
+(deny system-info)
+(deny system-privilege)
+(deny system-kext*)
+;; Two calls that no rule above governs: this Mac's hardware UUID, and
+;; the list of everything mounted on it, the names of its disks among it.
+(deny syscall-unix (syscall-number SYS_gethostuuid))
+(deny syscall-unix (syscall-number SYS_getfsstat) (syscall-number SYS_getfsstat64))
