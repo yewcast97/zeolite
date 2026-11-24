@@ -96,6 +96,9 @@ type viewportView struct {
 	// toBar is whether the Address Bar is to have the keyboard at the
 	// next build: a new Browser Tab's.
 	toBar bool
+	// closing is the stream whose Browser Tab the browser is being asked
+	// to close.
+	closing ViewportStream
 	// services are the window's, by which the Edit menu's commands
 	// reach this Mac's clipboard.
 	services ui.Services
@@ -308,7 +311,7 @@ func (v *sandboxView) openLink(link string) bool {
 	for i, m := range v.streamPacks() {
 		if m.ViewportStream.Type == pack.StreamCDP {
 			v.viewportTab = i
-			v.viewportOf(m).openTab(link, false)
+			v.viewportOf(m).openTab(link, false, nil)
 			return true
 		}
 	}
@@ -320,8 +323,10 @@ const blankAddress = "about:blank"
 
 // openTab opens a new Browser Tab at an address, off the main thread,
 // and shows it. One its user asked for is blank, and the keyboard goes
-// to the Address Bar, which is emptied for where the tab is to go.
-func (vp *viewportView) openTab(address string, typing bool) {
+// to the Address Bar, which is emptied for where the tab is to go. then,
+// where there is one, is told whether the new Browser Tab is the one
+// shown now.
+func (vp *viewportView) openTab(address string, typing bool, then func(shown bool)) {
 	sv := vp.sv
 	d, id := sv.d, sv.id
 	go func() {
@@ -332,13 +337,16 @@ func (vp *viewportView) openTab(address string, typing bool) {
 				return
 			}
 			if err != nil {
-				vp.err = "The link was not opened: " + err.Error()
-				return
+				vp.err = "The Browser Tab was not opened: " + err.Error()
+			} else {
+				vp.err = ""
+				vp.switchTo(tab)
+				if typing {
+					vp.toBar, vp.address = true, ""
+				}
 			}
-			vp.err = ""
-			vp.switchTo(tab)
-			if typing {
-				vp.toBar, vp.address = true, ""
+			if then != nil {
+				then(err == nil)
 			}
 		})
 	}()
@@ -368,13 +376,15 @@ func (vp *viewportView) navigate(c *ui.Context) {
 	vp.send(func() { stream.Navigate(address) })
 }
 
-// send has the stream sent an input after those that came before it.
-// What comes while inputBacklog of them wait is dropped: the sandbox
-// takes none then.
-func (vp *viewportView) send(input func()) {
+// send has the stream sent an input after those that came before it,
+// and reports whether it will be. What comes while inputBacklog of them
+// wait is dropped: the sandbox takes none then.
+func (vp *viewportView) send(input func()) bool {
 	select {
 	case vp.inputs <- input:
+		return true
 	default:
+		return false
 	}
 }
 
@@ -428,21 +438,45 @@ func (vp *viewportView) copy(cut bool) {
 }
 
 // closeTab closes the Browser Tab shown. Its stream ends with it, and
-// the view shows another, which there is: the control is offered only
-// where the browser has more than one.
+// the view shows another. The browser's last gives way to a blank one,
+// which is opened and shown first, as New Browser Tab's is: a browser
+// is never left with none, which shows nothing. A Browser Tab is asked
+// to close once, however often its user asks.
 func (vp *viewportView) closeTab() {
-	stream, d := vp.stream, vp.sv.d
-	if stream == nil {
+	stream := vp.stream
+	if stream == nil || stream == vp.closing {
 		return
 	}
-	vp.send(func() {
-		asked(func(ctx context.Context) {
-			if err := stream.CloseTab(ctx); err != nil {
-				d.update(func() {
-					if vp.stream == stream {
-						vp.err = "The Browser Tab was not closed: " + err.Error()
-					}
-				})
+	vp.closing = stream
+	if len(vp.tabs) > 1 {
+		if !vp.send(func() { vp.closeTabOf(stream) }) {
+			vp.closing = nil
+		}
+		return
+	}
+	vp.openTab(blankAddress, true, func(shown bool) {
+		if !shown {
+			vp.closing = nil
+			return
+		}
+		// Its stream is closed by now, and takes no input: the browser
+		// is asked on a connection of its own.
+		go vp.closeTabOf(stream)
+	})
+}
+
+// closeTabOf has the browser close the Browser Tab a stream shows, and
+// says so where it did not.
+func (vp *viewportView) closeTabOf(stream ViewportStream) {
+	asked(func(ctx context.Context) {
+		err := stream.CloseTab(ctx)
+		vp.sv.d.update(func() {
+			if vp.closing != stream {
+				return
+			}
+			vp.closing = nil
+			if err != nil {
+				vp.err = "The Browser Tab was not closed: " + err.Error()
 			}
 		})
 	})
@@ -673,11 +707,9 @@ func (vp *viewportView) view(c *ui.Context) {
 			vp.bar.Focus(c)
 		}
 		if glyphButton(c, "viewport-new-tab-"+vp.pack.Name, glyphAdd, newTabLabel).Clicked() {
-			vp.openTab(blankAddress, true)
+			vp.openTab(blankAddress, true, nil)
 		}
-		// The browser's last Browser Tab stays, as a sandbox's last Pane
-		// does: a browser with none shows nothing.
-		if len(vp.tabs) > 1 && glyphButton(c, "viewport-close-tab-"+vp.pack.Name, glyphClose, closeTabLabel).Clicked() {
+		if glyphButton(c, "viewport-close-tab-"+vp.pack.Name, glyphClose, closeTabLabel).Clicked() {
 			vp.closeTab()
 		}
 	})

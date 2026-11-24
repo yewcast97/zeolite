@@ -3403,7 +3403,7 @@ func TestALinkOpensInTheSandboxsBrowser(t *testing.T) {
 	h.backend.mu.Unlock()
 	prints("s1", link)
 	click(ui.Super, "Research")
-	h.settle("the failure to be said", func() bool { return h.tt.HasText("The link was not opened: the browser does not answer") })
+	h.settle("the failure to be said", func() bool { return h.tt.HasText("The Browser Tab was not opened: the browser does not answer") })
 	h.click("Try Again")
 	h.settle("the browser again", func() bool { _, ok := h.tt.Find("Web Test Browser viewport"); return ok })
 
@@ -3899,8 +3899,8 @@ func TestTheViewportTakesWhatIsTypedAndGoesBackAndForward(t *testing.T) {
 // keyboard: Select All, Undo and Redo are done there; Copy and Cut put
 // what the page says is selected on this Mac's clipboard, and leave it
 // alone where nothing is; Paste types what the clipboard holds. Close
-// Browser Tab, after the Address Bar, closes the one shown, and is there
-// only while the browser has another, which is shown then.
+// Browser Tab, after the Address Bar, closes the one shown: another is
+// shown then, and the browser's last gives way to a blank one.
 func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 	browser := browserPack(t)
 	cfg := gated("s1", "Research")
@@ -3992,35 +3992,37 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 	}
 	h.tt.ClickAt(box.X+box.W/2, box.Y+box.H/2)
 
-	// One Browser Tab is not to be closed.
-	if _, ok := h.tt.Find(closeTabLabel); ok {
-		t.Fatalf("the browser's one Browser Tab can be closed: %q", h.tt.Texts())
-	}
-	// With two, Close Browser Tab stands after the Address Bar, in its
-	// row. A browser that does not close it: that is said.
-	docs := viewport.BrowserTab{ID: "t2", Title: "Docs", Address: "https://example.org/docs"}
-	h.backend.browse(docs, home)
-	h.settle("the strip of the Browser Tabs", func() bool { return h.tt.HasText("Docs") })
+	// Close Browser Tab stands after the Address Bar, in its row, with
+	// one Browser Tab too.
 	closer, ok1 := h.tt.Find(closeTabLabel)
 	field, ok2 := h.tt.Find("Address of Web Test Browser")
 	if !ok1 || !ok2 || closer.X < field.X+field.W || closer.Y < field.Y-field.H || closer.Y > field.Y+field.H {
-		t.Fatalf("Close Browser Tab is at %+v and the Address Bar at %+v", closer, field)
+		t.Fatalf("Close Browser Tab is at %+v and the Address Bar at %+v: %q", closer, field, h.tt.Texts())
 	}
-	h.backend.mu.Lock()
-	h.backend.closeErr = errors.New("the browser does not answer")
-	h.backend.mu.Unlock()
+	// With two, a browser that does not close the one shown: that is
+	// said.
+	docs := viewport.BrowserTab{ID: "t2", Title: "Docs", Address: "https://example.org/docs"}
+	h.backend.browse(docs, home)
+	h.settle("the strip of the Browser Tabs", func() bool { return h.tt.HasText("Docs") })
+	fails := func(what *error, is bool) {
+		h.backend.mu.Lock()
+		defer h.backend.mu.Unlock()
+		*what = nil
+		if is {
+			*what = errors.New("the browser does not answer")
+		}
+	}
+	fails(&h.backend.closeErr, true)
 	h.click(closeTabLabel)
 	h.settle("the failure to be said", func() bool {
 		return h.tt.HasText("The Browser Tab was not closed: the browser does not answer")
 	})
 	h.click("Try Again")
-	h.backend.mu.Lock()
-	h.backend.closeErr = nil
-	h.backend.mu.Unlock()
+	fails(&h.backend.closeErr, false)
 	h.settle("the browser again", func() bool { _, ok := h.tt.Find(closeTabLabel); return ok })
 
-	// Closed: the other Browser Tab is shown, nothing is said of an
-	// error, and it is the last, which stays.
+	// Closed: the other Browser Tab is shown, and nothing is said of an
+	// error.
 	h.click(closeTabLabel)
 	h.settle("the Browser Tab that is left to be shown", func() bool {
 		opens := h.backend.opens()
@@ -4030,8 +4032,56 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 		t.Errorf("the stream of the Browser Tab shown was not asked to close it: %q", stream.inputsSince(0))
 	}
 	h.settle("the strip to go", func() bool { return !h.tt.HasText("Example Domain") })
-	if _, ok := h.tt.Find(closeTabLabel); ok || h.tt.HasText("Try Again") {
+	if h.tt.HasText("Try Again") {
 		t.Errorf("with one Browser Tab left the viewport shows %q", h.tt.Texts())
+	}
+
+	// The browser's last Browser Tab gives way to a blank one, which is
+	// opened first. A browser that opens none keeps the last: that is
+	// said, and nothing is closed.
+	last := h.backend.opens()[1]
+	fails(&h.backend.tabErr, true)
+	h.click(closeTabLabel)
+	h.settle("the failure to be said", func() bool {
+		return h.tt.HasText("The Browser Tab was not opened: the browser does not answer")
+	})
+	if last.sawInput("close tab") {
+		t.Error("the browser's last Browser Tab was closed though the browser opened no other")
+	}
+	h.click("Try Again")
+	fails(&h.backend.tabErr, false)
+	h.settle("the browser again", func() bool { _, ok := h.tt.Find(closeTabLabel); return ok })
+
+	// The blank one is shown, with the keyboard in the Address Bar,
+	// emptied, as a new Browser Tab's is; and the last one is closed,
+	// once: the browser lists the blank one alone.
+	h.click(closeTabLabel)
+	h.settle("the blank Browser Tab to be shown in the last one's place", func() bool {
+		opens := h.backend.opens()
+		return len(opens) == 3 && opens[2].tab == "link2" && last.sawInput("close tab") && !h.tt.HasText("Docs")
+	})
+	if got := h.backend.linksOpened(); !slices.Equal(got, []string{"s1 " + blankAddress, "s1 " + blankAddress}) {
+		t.Errorf("the browser was asked for %q", got)
+	}
+	h.settle("the Address Bar to have the keyboard", func() bool { return !vp.toBar && vp.closing == nil })
+	h.settle("a frame", func() bool { return true })
+	if active, _ := h.tt.TextInputActive(); !active || vp.address != "" {
+		t.Errorf("in the last Browser Tab's place the Address Bar holds %q, and the window takes text: %v", vp.address, active)
+	}
+	closes := 0
+	for _, input := range last.inputsSince(0) {
+		if input == "close tab" {
+			closes++
+		}
+	}
+	h.backend.mu.Lock()
+	left := append([]viewport.BrowserTab(nil), h.backend.browserTabs...)
+	h.backend.mu.Unlock()
+	if closes != 1 || len(left) != 1 || left[0].ID != "link2" {
+		t.Errorf("the last Browser Tab was asked to close %d times, and the browser lists %+v", closes, left)
+	}
+	if _, ok := h.tt.Find(closeTabLabel); !ok || h.tt.HasText("Try Again") {
+		t.Errorf("with a blank Browser Tab in the last one's place the viewport shows %q", h.tt.Texts())
 	}
 }
 
