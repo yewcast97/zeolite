@@ -187,6 +187,13 @@ func TestSandboxTerminal(t *testing.T) {
 	a.run("echo who=$(id -u) where=$(pwd) term=$TERM")
 	a.waitFor("the shell's identity", has("who=1000 where=/workspace term=xterm-256color"))
 
+	// A prompt begins a line of its own, though the program before it
+	// ended without ending its line.
+	a.run("printf 'no-line-end'")
+	a.waitFor("the prompt on a line of its own", func(text string) bool {
+		return strings.Contains(text, "\nno-line-end\n") && atPrompt(text)
+	})
+
 	// The TTY in the workstation has the size of the view, and follows it.
 	cols, rows := first.Size()
 	a.expectTTYSize("at first")

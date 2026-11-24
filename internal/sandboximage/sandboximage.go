@@ -104,6 +104,15 @@ const profilePath = "/etc/profile.d/zeolite.sh"
 // ~/.bashrc such an installer may have written its own place in. A
 // Terminal Session is a login shell: what its user installed there is
 // started there by its name, with no restart.
+//
+// It has a prompt begin a line of its own, too: a program that ended
+// without ending its line, as one that prints an address and nothing
+// after it, would have the prompt stand behind what it printed. Before
+// each prompt the shell tells the terminal to begin a line where it is
+// not at the beginning of one (OSC 133;L), which the dashboard's
+// terminal does itself, with nothing read from it. That comes before
+// what a ~/.bashrc has the shell do at a prompt, and keeps the status
+// of what ran for it.
 const profile = `# Where what the workstation's user installs is found.
 for dir in \
   "$HOME/.local/bin" \
@@ -120,10 +129,26 @@ do
   esac
 done
 export PATH
-if [ -n "$BASH_VERSION" ] && [ -r "$HOME/.bashrc" ]; then
-  . "$HOME/.bashrc"
+if [ -n "$BASH_VERSION" ]; then
+  if [ -r "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+  fi
+  # A prompt begins a line of its own.
+  ` + beginLine + `() {
+    local status=$?
+    printf '\033]133;L\007'
+    return $status
+  }
+  case ";${PROMPT_COMMAND-};" in
+    *";` + beginLine + `;"*) ;;
+    *) PROMPT_COMMAND="` + beginLine + `${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+  esac
 fi
 `
+
+// beginLine is the profile's function that has the terminal begin a line
+// for a prompt.
+const beginLine = "zeolite_begin_line"
 
 // Gatekeeper returns the gatekeeper's image for a CPU architecture as
 // Docker names it ("arm64", "amd64").

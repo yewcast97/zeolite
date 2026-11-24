@@ -168,3 +168,35 @@ func TestTheProfileFindsWhatTheUserInstalled(t *testing.T) {
 		t.Error("where npm puts global packages is not on the PATH")
 	}
 }
+
+// A prompt begins a line of its own: before each one the shell tells
+// the terminal to begin a line where it is not at the beginning of one,
+// first of what it does at a prompt, once however often the profile is
+// read, and with the status of what ran kept for what a ~/.bashrc does
+// there.
+func TestTheProfileBeginsAPromptOnALineOfItsOwn(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash to read the profile with")
+	}
+	home := t.TempDir()
+	file := filepath.Join(home, "profile.sh")
+	if err := os.WriteFile(file, []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("PROMPT_COMMAND='status=$?'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The shell does at a prompt what PROMPT_COMMAND holds, after the
+	// command before it: here one that ended with 7.
+	script := `. "$1"; . "$1"; printf '%s|' "$PROMPT_COMMAND"; (exit 7); eval "$PROMPT_COMMAND"; printf '|%s' "$status"`
+	cmd := exec.Command(bash, "-c", script, "bash", file)
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if want := beginLine + ";status=$?|\x1b]133;L\a|7"; string(out) != want {
+		t.Errorf("at a prompt the shell does and prints %q, want %q", out, want)
+	}
+}
