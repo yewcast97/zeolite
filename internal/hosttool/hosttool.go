@@ -342,14 +342,14 @@ func (t *Tools) run(ctx context.Context, s Settings, sc scratch, shared string, 
 	if err := errors.Join(stdout.open(), stderr.open()); err != nil {
 		stdout.abandon()
 		stderr.abandon()
-		result.Refused = "starting the Host Tool: " + err.Error()
+		result.Refused = "the program could not be started: " + err.Error()
 		return result
 	}
 	cmd.Stdout, cmd.Stderr = stdout.w, stderr.w
 	if err := cmd.Start(); err != nil {
 		stdout.abandon()
 		stderr.abandon()
-		result.Refused = "starting the Host Tool: " + err.Error()
+		result.Refused = "the program could not be started: " + err.Error()
 		return result
 	}
 	stdout.started()

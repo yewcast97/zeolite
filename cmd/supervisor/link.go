@@ -110,11 +110,13 @@ func link(socket string, in io.Reader, out io.Writer) error {
 }
 
 // ask hands one ask to the link and waits for its answer. Closing stop
-// withdraws it.
+// withdraws it. Why it has no answer is said to an agent, as a tool's
+// answer: in the agent's words, a call and what answers it, and none of
+// the app's.
 func ask(socket string, r sandbox.LinkRequest, stop <-chan struct{}) (sandbox.LinkAnswer, error) {
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
-		return sandbox.LinkAnswer{}, errors.New("this sandbox's Link to the app is not open")
+		return sandbox.LinkAnswer{}, errors.New("what answers this tool is not connected now: try again later")
 	}
 	defer conn.Close()
 	done := make(chan struct{})
@@ -131,7 +133,7 @@ func ask(socket string, r sandbox.LinkRequest, stop <-chan struct{}) (sandbox.Li
 	}
 	var a sandbox.LinkAnswer
 	if err := json.NewDecoder(conn).Decode(&a); err != nil {
-		return sandbox.LinkAnswer{}, errors.New("the ask was ended before the app answered it")
+		return sandbox.LinkAnswer{}, errors.New("the call ended before it was answered: try again")
 	}
 	return a, nil
 }

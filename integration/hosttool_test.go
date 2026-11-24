@@ -34,7 +34,7 @@ import (
 // leaves withdraws its call.
 func callHostTool(t *testing.T, sandboxID, arguments string, stays int) (string, bool) {
 	t.Helper()
-	return callHostToolBy(t, sandboxID, arguments, stays, "/usr/local/bin/supervisor mcp-bridge host")
+	return callHostToolBy(t, sandboxID, arguments, stays, "/usr/local/bin/supervisor mcp-bridge macos")
 }
 
 // callHostToolBy is callHostTool with the server's command line said:
@@ -77,7 +77,7 @@ func callHostToolBy(t *testing.T, sandboxID, arguments string, stays int, server
 // and for no other.
 func raiseHand(sandboxID, sessionID string) string {
 	if !orch.HasSession(sandboxID, sessionID) {
-		return "the hand is raised from no Terminal Session the app opened in this sandbox"
+		return "this is not a session your user has open"
 	}
 	updates.listen(sandbox.Update{SandboxID: sandboxID, Hand: &sandbox.Hand{Session: sessionID}})
 	return ""
@@ -130,14 +130,14 @@ func TestHostTools(t *testing.T) {
 	// is told how Host Tools work.
 	// Every agent the app knows: each has the server in its own
 	// registry, and OpenCode is sent to the one that is the app's own.
-	if out, _ := inSandbox(cfg.ID, `cat "$OPENCODE_CONFIG"; echo; echo "$OPENCODE_CONFIG"`); !strings.Contains(out, `"host"`) || !strings.Contains(out, `"mcp-bridge"`) || !strings.HasSuffix(trimmed(out), "/tmp/zeolite/opencode.json") {
+	if out, _ := inSandbox(cfg.ID, `cat "$OPENCODE_CONFIG"; echo; echo "$OPENCODE_CONFIG"`); !strings.Contains(out, `"macos"`) || !strings.Contains(out, `"mcp-bridge"`) || !strings.HasSuffix(trimmed(out), "/tmp/zeolite/opencode.json") {
 		t.Errorf("OpenCode's registry is %s", out)
 	}
 	for _, a := range sandbox.KnownAgents {
 		if a.Registry.Variable != "" {
 			continue
 		}
-		if out, code := inSandbox(cfg.ID, "cat ~/"+a.Registry.File); code != 0 || !strings.Contains(out, "host") || !strings.Contains(out, "/usr/local/bin/supervisor") || !strings.Contains(out, "mcp-bridge") {
+		if out, code := inSandbox(cfg.ID, "cat ~/"+a.Registry.File); code != 0 || !strings.Contains(out, "macos") || !strings.Contains(out, "/usr/local/bin/supervisor") || !strings.Contains(out, "mcp-bridge") {
 			t.Errorf("the registry of %s, ~/%s, is (exit %d) %s", a.Title, a.Registry.File, code, out)
 		}
 	}
@@ -148,8 +148,8 @@ func TestHostTools(t *testing.T) {
 	}
 	// What an agent is told of Host Tools, the server tells it as it
 	// meets it, and in its tool's description: no file in the Home does.
-	met, _ := inSandbox(cfg.ID, `printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /usr/local/bin/supervisor mcp-bridge host; ls -A /workspace`)
-	if strings.Count(met, "Run a program of the Mac that hosts this sandbox") != 2 || !strings.Contains(met, "The Mac's GPU is not given") || strings.Contains(met, "AGENTS.md") || strings.Contains(met, "CLAUDE.md") {
+	met, _ := inSandbox(cfg.ID, `printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /usr/local/bin/supervisor mcp-bridge macos; ls -A /workspace`)
+	if strings.Count(met, "Run a program on a Mac, in a restricted macOS environment") != 2 || !strings.Contains(met, "The Mac's GPU is not given") || strings.Contains(met, "AGENTS.md") || strings.Contains(met, "CLAUDE.md") {
 		t.Errorf("the agent is told %s", met)
 	}
 
@@ -215,15 +215,15 @@ func TestHostTools(t *testing.T) {
 	other.SharedFolder = name
 	startWith(t, other, nil, orchestrator.StartOptions{SharedFolder: folder, Link: serveLink(other.ID, tools, nil, nil)})
 	waitState(t, other.ID, sandbox.StateGateLocked, 20*time.Second)
-	if out, _ := inSandbox(other.ID, `cat "$OPENCODE_CONFIG" ~/.claude.json ~/.codex/config.toml`); strings.Contains(out, `host`) || strings.Count(out, "sandbox") < 3 {
+	if out, _ := inSandbox(other.ID, `cat "$OPENCODE_CONFIG" ~/.claude.json ~/.codex/config.toml`); strings.Contains(out, `macos`) || strings.Count(out, "sandbox") < 3 {
 		t.Errorf("the registries of a sandbox with no Host Tools hold %s", out)
 	}
 	// The bridge starts no server the sandbox has not.
-	if out, code := inSandbox(other.ID, "/usr/local/bin/supervisor mcp-bridge host < /dev/null 2>&1"); code == 0 || !strings.Contains(out, `no MCP server "host"`) {
+	if out, code := inSandbox(other.ID, "/usr/local/bin/supervisor mcp-bridge macos < /dev/null 2>&1"); code == 0 || !strings.Contains(out, `no MCP server "macos"`) {
 		t.Errorf("the bridge of a server the sandbox has not said %q (exit %d)", trimmed(out), code)
 	}
 	before, _ := os.ReadDir(folder)
-	if said, failed := callHostToolBy(t, other.ID, `{"argv":["/usr/bin/touch","made-with-no-host-tools"]}`, 2, "/usr/local/bin/supervisor host-tools"); !failed || !strings.Contains(said, "given no Host Tools") {
+	if said, failed := callHostToolBy(t, other.ID, `{"argv":["/usr/bin/touch","made-with-no-host-tools"]}`, 2, "/usr/local/bin/supervisor host-tools"); !failed || !strings.Contains(said, "running programs on the Mac is not allowed here") {
 		t.Errorf("in a sandbox with no Host Tools the tool said %q (error %v)", said, failed)
 	}
 	if after, _ := os.ReadDir(folder); len(after) != len(before) {
@@ -235,7 +235,7 @@ func TestHostTools(t *testing.T) {
 		_, code := docker("exec", orchestrator.WorkstationContainer(other.ID), "pgrep", "-x", "-f", "/usr/local/bin/supervisor link")
 		return code != 0
 	})
-	if said, failed := callHostToolBy(t, other.ID, `{"argv":["/bin/ls"]}`, 2, "/usr/local/bin/supervisor host-tools"); !failed || !strings.Contains(said, "Link to the app is not open") {
+	if said, failed := callHostToolBy(t, other.ID, `{"argv":["/bin/ls"]}`, 2, "/usr/local/bin/supervisor host-tools"); !failed || !strings.Contains(said, "what answers this tool is not connected now") {
 		t.Errorf("with its Link gone the tool said %q (error %v)", said, failed)
 	}
 

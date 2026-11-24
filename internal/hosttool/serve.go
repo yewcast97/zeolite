@@ -72,7 +72,7 @@ func (sv *Served) Run(ctx context.Context, r sandbox.HostToolRequest) sandbox.Ho
 	select {
 	case sv.slots <- struct{}{}:
 	default:
-		return sandbox.HostToolResult{Refused: fmt.Sprintf("%d Host Tools of this sandbox are running, which is as many as run at once: wait for one to end", sandbox.HostToolMaxRuns)}
+		return sandbox.HostToolResult{Refused: fmt.Sprintf("%d runs are under way, which is as many as there are at once: wait for one to end", sandbox.HostToolMaxRuns)}
 	}
 	defer func() { <-sv.slots }()
 	sv.runs.Add(1)
@@ -83,7 +83,7 @@ func (sv *Served) Run(ctx context.Context, r sandbox.HostToolRequest) sandbox.Ho
 	stop := context.AfterFunc(sv.ctx, cancel)
 	defer stop()
 	if sv.ctx.Err() != nil {
-		return sandbox.HostToolResult{Refused: "the sandbox's Host Tools are served no more"}
+		return sandbox.HostToolResult{Refused: "no more programs are run on the Mac from here"}
 	}
 	return sv.t.run(ctx, sv.settings, sv.sc, sv.shared, r)
 }

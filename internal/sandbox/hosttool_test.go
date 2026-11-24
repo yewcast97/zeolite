@@ -36,19 +36,22 @@ func TestAHostToolRequestIsChecked(t *testing.T) {
 		{HostToolRequest{Argv: []string{"ls", "a\x00b"}}, "NUL"},
 		{HostToolRequest{Argv: []string{"ls", strings.Repeat("x", HostToolMaxArgBytes)}}, "larger than"},
 		// What keeps a tool's files in its Scratch is not a request's.
-		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"HOME": "/Users/someone"}}, "every Host Tool"},
-		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"TMPDIR": "/tmp"}}, "every Host Tool"},
-		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"PATH": "/x"}}, "every Host Tool"},
-		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{HostToolCacheEnv: "/x"}}, "every Host Tool"},
+		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"HOME": "/Users/someone"}}, "every run"},
+		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"TMPDIR": "/tmp"}}, "every run"},
+		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"PATH": "/x"}}, "every run"},
+		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{HostToolCacheEnv: "/x"}}, "every run"},
 		// Nor is where bash and zsh find the Shell Startup File.
-		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"BASH_ENV": "/workspace/shared/mine"}}, "every Host Tool"},
-		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"ZDOTDIR": "/workspace/shared"}}, "every Host Tool"},
+		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"BASH_ENV": "/workspace/shared/mine"}}, "every run"},
+		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"ZDOTDIR": "/workspace/shared"}}, "every run"},
 		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"DYLD_INSERT_LIBRARIES": "/x.dylib"}}, "loader"},
 		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"A B": "x"}}, "cannot name"},
 		{HostToolRequest{Argv: []string{"ls"}, Env: map[string]string{"A": "x\x00y"}}, "NUL"},
 		{HostToolRequest{Argv: []string{"ls"}, Seconds: -1}, "seconds"},
 		{HostToolRequest{Argv: []string{"ls"}, Seconds: HostToolMaxSeconds + 1}, "seconds"},
-		// A folder is named from the Shared Folder, and stays in it.
+		// A folder is named from the Shared Folder, and stays in it: the
+		// agent is told so by the folder's path, which is what it knows.
+		{HostToolRequest{Argv: []string{"ls"}, Dir: "/Users"}, "a path from /workspace/shared"},
+		{HostToolRequest{Argv: []string{"ls"}, Dir: ".."}, "steps out of /workspace/shared"},
 		{HostToolRequest{Argv: []string{"ls"}, Dir: "/Users"}, "slash"},
 		{HostToolRequest{Argv: []string{"ls"}, Dir: ".."}, "steps out"},
 		{HostToolRequest{Argv: []string{"ls"}, Dir: "a/../../b"}, "steps out"},

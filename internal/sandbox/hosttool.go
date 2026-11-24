@@ -8,10 +8,11 @@ import (
 )
 
 // HostToolServer is the name of the MCP server by which a sandbox's
-// agent runs Host Tools, and HostToolRun the name of its one tool. No
-// Capability Pack's server has that name.
+// agent runs Host Tools, and HostToolRun the name of its one tool. The
+// server is named for what it is to an agent, a place where a program
+// runs under macOS. No Capability Pack's server has that name.
 const (
-	HostToolServer = "host"
+	HostToolServer = "macos"
 	HostToolRun    = "run"
 )
 
@@ -108,9 +109,9 @@ func (r HostToolRequest) Check() error {
 		case !EnvironmentName(name):
 			return fmt.Errorf("%q cannot name an environment variable", name)
 		case hostToolFixedEnvironment[name]:
-			return fmt.Errorf("%s is set for every Host Tool, and a request does not change it", name)
+			return fmt.Errorf("%s is set for every run, and a call does not change it", name)
 		case strings.HasPrefix(name, "DYLD_"):
-			return fmt.Errorf("%s: the loader's variables are not a request's to set", name)
+			return fmt.Errorf("%s: the loader's variables are not a call's to set", name)
 		case strings.ContainsRune(value, 0):
 			return fmt.Errorf("the value of %s holds a NUL character", name)
 		}
@@ -134,13 +135,13 @@ func checkHostToolDir(dir string) error {
 	case strings.ContainsRune(dir, 0):
 		return errors.New("dir holds a NUL character")
 	case path.IsAbs(dir):
-		return errors.New("dir is a path from the Shared Folder, such as build/out: it does not begin with a slash")
+		return errors.New("dir is a path from " + SharedFolderPath + ", such as build/out: it does not begin with a slash")
 	case strings.HasPrefix(dir, "-"):
 		return errors.New("dir begins with a hyphen")
 	}
 	for _, step := range strings.Split(dir, "/") {
 		if step == ".." {
-			return errors.New("dir steps out of the Shared Folder")
+			return errors.New("dir steps out of " + SharedFolderPath)
 		}
 	}
 	return nil

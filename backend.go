@@ -297,8 +297,10 @@ func (b *backend) link(cfg sandbox.Config, sharedFolder string) func(io.ReadWrit
 			settings := hosttool.Settings{SandboxID: cfg.ID, SharedFolder: sharedFolder, GPU: cfg.HostTools.GPU, MacName: cfg.HostTools.MacName}
 			served, err := b.hostTools.Serve(settings)
 			if err != nil {
+				// Why is the app's to say to its user, here: an agent is
+				// told what it can act on, and nothing of this Mac's.
 				log.Printf("%s: its Host Tools cannot be run: %v", cfg.Name, err)
-				refused := "this sandbox's Host Tools cannot be run: " + err.Error()
+				refused := "no program can be run on the Mac now: your user has to look into it"
 				handlers.HostTool = func(context.Context, sandbox.HostToolRequest) sandbox.HostToolResult {
 					return sandbox.HostToolResult{Refused: refused}
 				}
@@ -320,7 +322,7 @@ func (b *backend) link(cfg sandbox.Config, sharedFolder string) func(io.ReadWrit
 func (b *backend) raiseHand(sandboxID, sessionID string) (refused string) {
 	orch, err := b.orchestrator()
 	if err != nil || !orch.HasSession(sandboxID, sessionID) {
-		return "the hand is raised from no Terminal Session the app opened in this sandbox"
+		return "this is not a session your user has open"
 	}
 	b.tell(sandbox.Update{SandboxID: sandboxID, Hand: &sandbox.Hand{Session: sessionID}})
 	return ""

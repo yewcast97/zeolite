@@ -84,7 +84,7 @@ func Serve(stream io.ReadWriteCloser, h Handlers) error {
 		select {
 		case working <- struct{}{}:
 		default:
-			answer(sandbox.LinkAnswer{ID: r.ID, Refused: fmt.Sprintf("%d asks of this sandbox are being worked on, which is as many as are at once", sandbox.LinkMaxAsks)})
+			answer(sandbox.LinkAnswer{ID: r.ID, Refused: fmt.Sprintf("%d calls are being answered, which is as many as are at once: wait for one to end", sandbox.LinkMaxAsks)})
 			continue
 		}
 		askCtx, withdraw := context.WithCancel(ctx)
@@ -111,12 +111,14 @@ func Serve(stream io.ReadWriteCloser, h Handlers) error {
 }
 
 // work is what answers an ask, or why the ask is refused: it is of no
-// kind, or of one the sandbox is not given.
+// kind, or of one the sandbox is not given. A refusal is read by an
+// agent, as its tool's answer: it says what the agent can do about it,
+// in the agent's words and none of the app's.
 func (h Handlers) work(r sandbox.LinkRequest) (work func(context.Context) sandbox.LinkAnswer, refused string) {
 	switch {
 	case r.HostTool != nil:
 		if h.HostTool == nil {
-			return nil, "this sandbox is given no Host Tools: its user gives them in its Setup"
+			return nil, "running programs on the Mac is not allowed here: ask your user to allow it"
 		}
 		request := *r.HostTool
 		return func(ctx context.Context) sandbox.LinkAnswer {
@@ -125,14 +127,14 @@ func (h Handlers) work(r sandbox.LinkRequest) (work func(context.Context) sandbo
 		}, ""
 	case r.Hand != nil:
 		if h.Hand == nil {
-			return nil, "this sandbox's hands are not taken"
+			return nil, "your user cannot be called from here"
 		}
 		request := *r.Hand
 		return func(context.Context) sandbox.LinkAnswer {
 			return sandbox.LinkAnswer{Refused: h.Hand(request)}
 		}, ""
 	}
-	return nil, "the ask is of no kind the app knows"
+	return nil, "a call of this kind is not answered"
 }
 
 // readLine reads one line, without its end, and fails on one longer

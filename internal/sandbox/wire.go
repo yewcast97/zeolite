@@ -206,7 +206,7 @@ type SupervisorConfig struct {
 	MCPServers []MCPServer `json:"mcpServers,omitempty"`
 	// HostTools says that the sandbox is given Host Tools: the
 	// supervisor then registers the server by which the agent runs them,
-	// and tells the agent of it.
+	// whose tool says what their Wall was given.
 	HostTools *HostToolsNotice `json:"hostTools,omitempty"`
 	// SharedFolder says that the workstation mounts a Shared Folder, at
 	// SharedFolderPath.
@@ -214,7 +214,7 @@ type SupervisorConfig struct {
 }
 
 // HostToolsNotice is what a workstation is told of its sandbox's Host
-// Tools, for the agent's instructions: what their Wall was given.
+// Tools, for what their tool says of itself: what their Wall was given.
 type HostToolsNotice struct {
 	GPU     bool `json:"gpu,omitempty"`
 	MacName bool `json:"macName,omitempty"`

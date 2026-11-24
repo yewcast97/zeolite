@@ -66,7 +66,7 @@ func (h *homeOf) put(executable, text string) {
 // as the bridge, with the server's name.
 func TestEveryAgentsRegistryIsWritten(t *testing.T) {
 	h := newHome(t)
-	if errs := h.write("browser", "host"); len(errs) != 0 {
+	if errs := h.write("browser", "macos"); len(errs) != 0 {
 		t.Fatal(errs)
 	}
 	// The JSON registries: the server under its name, with the program
@@ -78,7 +78,7 @@ func TestEveryAgentsRegistryIsWritten(t *testing.T) {
 		if err := json.Unmarshal([]byte(h.read(executable)), &registry); err != nil {
 			t.Fatalf("%s: %v", executable, err)
 		}
-		for _, name := range []string{"browser", "host"} {
+		for _, name := range []string{"browser", "macos"} {
 			entry := registry.MCPServers[name]
 			args, _ := entry["args"].([]any)
 			kind, _ := entry["type"].(string)
@@ -105,7 +105,7 @@ func TestEveryAgentsRegistryIsWritten(t *testing.T) {
 	if err := json.Unmarshal([]byte(h.read("opencode")), &opencode); err != nil {
 		t.Fatal(err)
 	}
-	if got := opencode.MCP["host"]; got.Type != "local" || strings.Join(got.Command, " ") != testSelf+" mcp-bridge host" || !got.Enabled || got.Timeout <= int64(sandbox.HostToolMaxSeconds)*1000 || len(opencode.MCP) != 2 {
+	if got := opencode.MCP["macos"]; got.Type != "local" || strings.Join(got.Command, " ") != testSelf+" mcp-bridge macos" || !got.Enabled || got.Timeout <= int64(sandbox.HostToolMaxSeconds)*1000 || len(opencode.MCP) != 2 {
 		t.Errorf("OpenCode's registry is %+v: the agent must wait longer than a run may take", opencode.MCP)
 	}
 	// The TOML registries: a table for each server, and Codex is told
@@ -138,7 +138,7 @@ func TestEveryAgentsRegistryIsWritten(t *testing.T) {
 	for _, a := range sandbox.KnownAgents {
 		before[a.Executable] = h.read(a.Executable)
 	}
-	if errs := h.write("browser", "host"); len(errs) != 0 {
+	if errs := h.write("browser", "macos"); len(errs) != 0 {
 		t.Fatal(errs)
 	}
 	for _, a := range sandbox.KnownAgents {
@@ -150,7 +150,7 @@ func TestEveryAgentsRegistryIsWritten(t *testing.T) {
 		t.Fatal(errs)
 	}
 	for _, a := range sandbox.KnownAgents {
-		if text := h.read(a.Executable); strings.Contains(text, `"host"`) || strings.Contains(text, ".host]") || !strings.Contains(text, "browser") {
+		if text := h.read(a.Executable); strings.Contains(text, `"macos"`) || strings.Contains(text, ".macos]") || !strings.Contains(text, "browser") {
 			t.Errorf("%s: with one server fewer its registry is:\n%s", a.Title, text)
 		}
 	}
@@ -167,15 +167,15 @@ func TestAJSONRegistryKeepsWhatIsNotTheApps(t *testing.T) {
   "mcpServers": {
     "mine": {"command": "npx", "args": ["-y", "my-server"], "env": {"TOKEN": "t"}},
     "stale": {"type":"stdio","command":"/usr/local/bin/supervisor","args":["mcp-bridge","stale"]},
-    "host": {"command": "my-own-host"}
+    "macos": {"command": "my-own-macos"}
   },
   "projects": {"/workspace": {"allowedTools": []}}
 }
 `
 	h.put("claude", theirs)
 	os.Chmod(h.path("claude"), 0o640)
-	errs := h.write("browser", "host")
-	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "servers of its own named host") {
+	errs := h.write("browser", "macos")
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "servers of its own named macos") {
 		t.Fatalf("a server of the user's under a name of the app's: %v", errs)
 	}
 	got := h.read("claude")
@@ -183,7 +183,7 @@ func TestAJSONRegistryKeepsWhatIsNotTheApps(t *testing.T) {
 		`"numStartups": 12,`,
 		`"oauthAccount": {"emailAddress": "someone@example.com",   "odd  spacing": [1,2 ,3]},`,
 		`"mine": {"command": "npx", "args": ["-y", "my-server"], "env": {"TOKEN": "t"}},`,
-		`"host": {"command": "my-own-host"},`,
+		`"macos": {"command": "my-own-macos"},`,
 		`"projects": {"/workspace": {"allowedTools": []}}`,
 	} {
 		if !strings.Contains(got, kept) {
@@ -278,22 +278,22 @@ command = "/usr/local/bin/supervisor"
 """
 `
 	h.put("codex", theirs)
-	if errs := h.write("host", "browser"); len(errs) != 0 {
+	if errs := h.write("macos", "browser"); len(errs) != 0 {
 		t.Fatal(errs)
 	}
 	got := h.read("codex")
 	want := strings.Replace(theirs, "[mcp_servers.stale]\ncommand = \"/usr/local/bin/supervisor\"\nargs = [\"mcp-bridge\", \"stale\"]\ntool_timeout_sec = 1800\n\n", "", 1) +
 		"\n[mcp_servers.browser]\ncommand = \"/usr/local/bin/supervisor\"\nargs = [\"mcp-bridge\", \"browser\"]\ntool_timeout_sec = 1800\n" +
-		"\n[mcp_servers.host]\ncommand = \"/usr/local/bin/supervisor\"\nargs = [\"mcp-bridge\", \"host\"]\ntool_timeout_sec = 1800\n"
+		"\n[mcp_servers.macos]\ncommand = \"/usr/local/bin/supervisor\"\nargs = [\"mcp-bridge\", \"macos\"]\ntool_timeout_sec = 1800\n"
 	if got != want {
 		t.Errorf("the registry is:\n%s\nwant:\n%s", got, want)
 	}
 	// Written again it is the same, and with one server fewer that
 	// server's table is gone, and the user's own text is as it was.
-	if errs := h.write("host", "browser"); len(errs) != 0 || h.read("codex") != want {
+	if errs := h.write("macos", "browser"); len(errs) != 0 || h.read("codex") != want {
 		t.Errorf("written again the registry changed (%v)", errs)
 	}
-	if errs := h.write("host"); len(errs) != 0 {
+	if errs := h.write("macos"); len(errs) != 0 {
 		t.Fatal(errs)
 	}
 	if got := h.read("codex"); strings.Contains(got, "[mcp_servers.browser]") || !strings.Contains(got, "[mcp_servers.not-a-table]\ncommand = \"/usr/local/bin/supervisor\"\n\"\"\"") || !strings.Contains(got, "[mcp_servers.mine.env]\nTOKEN = \"t\"") {
@@ -302,9 +302,9 @@ command = "/usr/local/bin/supervisor"
 
 	// A server of the user's own under a name of the app's: writing the
 	// app's would say the table twice, so the registry is left as it is.
-	const taken = "[mcp_servers.host]\ncommand = \"my-own-host\"\n"
+	const taken = "[mcp_servers.macos]\ncommand = \"my-own-macos\"\n"
 	h.put("grok", taken)
-	errs := h.write("host")
+	errs := h.write("macos")
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "config.toml is left as it is") || h.read("grok") != taken {
 		t.Errorf("a table of the user's under a name of the app's: %v\n%s", errs, h.read("grok"))
 	}
@@ -341,7 +341,7 @@ func TestTheBridgeFindsItsServerByName(t *testing.T) {
 	if err != nil || strings.Join(command, " ") != "mcp-server-playwright --cdp-endpoint http://127.0.0.1:9222" || env["DEBUG"] != "1" {
 		t.Errorf("the pack's server is %q with %v (%v)", command, env, err)
 	}
-	command, env, err = bridged(read, testSelf, "host")
+	command, env, err = bridged(read, testSelf, "macos")
 	if err != nil || strings.Join(command, " ") != testSelf+" host-tools" || len(env) != 0 {
 		t.Errorf("the Host Tools' server is %q with %v (%v)", command, env, err)
 	}
@@ -349,7 +349,7 @@ func TestTheBridgeFindsItsServerByName(t *testing.T) {
 	if command, env, err := bridged(sandbox.SupervisorConfig{}, testSelf, "sandbox"); err != nil || strings.Join(command, " ") != testSelf+" state" || len(env) != 0 {
 		t.Errorf("the state server is %q with %v (%v)", command, env, err)
 	}
-	if got := strings.Join(serverNames(read), " "); got != "sandbox browser host" {
+	if got := strings.Join(serverNames(read), " "); got != "sandbox browser macos" {
 		t.Errorf("the sandbox's servers are %q", got)
 	}
 	if got := strings.Join(serverNames(sandbox.SupervisorConfig{}), " "); got != "sandbox" {
@@ -361,7 +361,7 @@ func TestTheBridgeFindsItsServerByName(t *testing.T) {
 		}
 	}
 	// A sandbox that is given no Host Tools has no such server.
-	if command, _, err := bridged(sandbox.SupervisorConfig{}, testSelf, "host"); err == nil {
+	if command, _, err := bridged(sandbox.SupervisorConfig{}, testSelf, "macos"); err == nil {
 		t.Errorf("with no Host Tools the bridge would start %q", command)
 	}
 	if _, err := readConfig(filepath.Join(t.TempDir(), "none.json")); err == nil {

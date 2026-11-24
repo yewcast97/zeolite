@@ -356,12 +356,12 @@ func TestAnAgentRaisesItsHand(t *testing.T) {
 	if hands := updates.handsOf(cfg.ID); hands[0] != session.ID() || hands[0] == beside.ID() {
 		t.Errorf("the hand was raised for the session %q, want %q", hands[0], session.ID())
 	}
-	// It rang no terminal, and the server said of itself what an agent
-	// is told.
+	// It rang no terminal, and the server told its client its tool's
+	// words, and nothing of where an agent works.
 	if rang.Load() != 0 {
 		t.Errorf("a raised hand rang %d bells", rang.Load())
 	}
-	if out, _ := inSandbox(cfg.ID, "cat /tmp/raised"); !strings.Contains(out, "You work in a sandbox") || !strings.Contains(out, "raise_hand") {
+	if out, _ := inSandbox(cfg.ID, "cat /tmp/raised"); !strings.Contains(out, "The tool `raise_hand` of this server: Draw your user's attention to this session") || strings.Contains(out, "You work in") || strings.Contains(out, "/workspace") {
 		t.Errorf("the server told its client:\n%s", out)
 	}
 	// The call was counted with the MCP calls, as a pack's are.
@@ -377,13 +377,13 @@ func TestAnAgentRaisesItsHand(t *testing.T) {
 	// Outside every Terminal Session there is no hand to raise, and the
 	// app takes none for a session it did not open.
 	out, _ := inSandbox(cfg.ID, "(printf '%s\\n' "+raiseHandCalls+"; sleep 1) | /usr/local/bin/supervisor state")
-	if !strings.Contains(out, "not started from a Terminal Session") || strings.Contains(out, "Your hand is raised:") {
+	if !strings.Contains(out, "not started from a terminal session") || strings.Contains(out, "Your hand is raised:") {
 		t.Errorf("outside a Terminal Session the server said:\n%s", out)
 	}
 	if hands := updates.handsOf(cfg.ID); len(hands) != 1 {
 		t.Errorf("the app was told of the hands %q", hands)
 	}
-	if got := raiseHand(cfg.ID, "0000000000000000"); !strings.Contains(got, "no Terminal Session the app opened") {
+	if got := raiseHand(cfg.ID, "0000000000000000"); !strings.Contains(got, "not a session your user has open") {
 		t.Errorf("a hand of a session nobody opened was answered %q", got)
 	}
 	// No file in the Home tells agents any of this.

@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,7 +117,7 @@ func TestALinkIsServed(t *testing.T) {
 	// refused, each under its number, and the Link goes on.
 	for id, line := range map[uint64]string{3: `{"id":3}`, 4: `{"id":4,"somethingElse":{"x":1}}`} {
 		e.send(line)
-		if got := e.answers(1); !strings.Contains(got[id].Refused, "no kind") || got[id].HostTool != nil {
+		if got := e.answers(1); got[id].Refused != "a call of this kind is not answered" || got[id].HostTool != nil {
 			t.Errorf("an ask of no kind was answered %+v", got)
 		}
 	}
@@ -128,7 +129,7 @@ func TestALinkIsServed(t *testing.T) {
 	}
 	waitFor(t, "the asks to be worked on", func() bool { return int(tools.going.Load()) == sandbox.LinkMaxAsks })
 	e.send(`{"id":999,"hostTool":{"argv":["too-many"]}}`)
-	if got := e.answers(1); !strings.Contains(got[999].Refused, "at once") {
+	if got := e.answers(1); !strings.Contains(got[999].Refused, "calls are being answered, which is as many as are at once: wait for one to end") || saysTheAppsWords(got[999].Refused) {
 		t.Errorf("one ask too many was answered %+v", got)
 	}
 
@@ -163,7 +164,7 @@ func TestAHandIsHandedOn(t *testing.T) {
 		defer mu.Unlock()
 		raised = append(raised, r.Session)
 		if r.Session != "aaa" {
-			return "the hand is raised from no Terminal Session the app opened in this sandbox"
+			return "this is not a session your user has open"
 		}
 		return ""
 	}})
@@ -172,7 +173,7 @@ func TestAHandIsHandedOn(t *testing.T) {
 		t.Errorf("a hand was answered %+v", got)
 	}
 	e.send(`{"id":2,"hand":{"session":"zzz","words":"look at me"}}`)
-	if got := e.answers(1); !strings.Contains(got[2].Refused, "no Terminal Session") {
+	if got := e.answers(1); got[2].Refused != "this is not a session your user has open" {
 		t.Errorf("a hand of a session that is not the sandbox's was answered %+v", got)
 	}
 	mu.Lock()
@@ -187,9 +188,26 @@ func TestAHandIsHandedOn(t *testing.T) {
 func TestWhatASandboxIsNotGivenIsRefused(t *testing.T) {
 	e := serve(t, Handlers{})
 	e.send(`{"id":1,"hostTool":{"argv":["ls"]}}`)
-	if got := e.answers(1); !strings.Contains(got[1].Refused, "given no Host Tools") || got[1].HostTool != nil {
+	if got := e.answers(1); got[1].Refused != "running programs on the Mac is not allowed here: ask your user to allow it" || got[1].HostTool != nil {
 		t.Errorf("a Host Tool's request of a sandbox that has none was answered %+v", got)
 	}
+	// So is a hand, where none is taken. Each refusal is read by an
+	// agent: it names nothing in the app's own words.
+	e.send(`{"id":2,"hand":{"session":"aaa"}}`)
+	if got := e.answers(1); got[2].Refused != "your user cannot be called from here" {
+		t.Errorf("a hand that is not taken was answered %+v", got)
+	}
+	for _, refusal := range []string{"running programs on the Mac is not allowed here: ask your user to allow it", "your user cannot be called from here", "a call of this kind is not answered"} {
+		if saysTheAppsWords(refusal) {
+			t.Errorf("the refusal %q is in the app's words", refusal)
+		}
+	}
+}
+
+// saysTheAppsWords reports whether what an agent is answered names
+// something as the app does: a refusal is said as an agent works.
+func saysTheAppsWords(refusal string) bool {
+	return regexp.MustCompile(`(?i)\b(sandbox|host tools?|link|setup|app|terminal session|shared folder|wall|scratch)\b`).MatchString(refusal)
 }
 
 // What is no ask ends the Link: the workstation's end of it is the

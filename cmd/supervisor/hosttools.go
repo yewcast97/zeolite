@@ -11,7 +11,7 @@ import (
 
 // A sandbox's Host Tools are reached from its workstation in two steps.
 // The agent's MCP client starts `supervisor host-tools`, the MCP server
-// host, whose one tool, run, hands each call to the sandbox's Link,
+// macos, whose one tool, run, hands each call to the sandbox's Link,
 // which carries it to the app, and waits for its answer.
 //
 // Nothing here runs a program: a request names one, and the app runs it
@@ -27,7 +27,7 @@ func askHostTool(socket string, r sandbox.HostToolRequest, stop <-chan struct{})
 	case answer.Refused != "":
 		return sandbox.HostToolResult{Refused: answer.Refused}, nil
 	case answer.HostTool == nil:
-		return sandbox.HostToolResult{}, errors.New("the app answered a Host Tool's request with something else")
+		return sandbox.HostToolResult{}, errors.New("the call was answered with no run's result: try again")
 	}
 	return *answer.HostTool, nil
 }
@@ -50,7 +50,9 @@ const (
 
 // hostToolWords are what an agent is told of Host Tools, as they are
 // for this sandbox: once as the server's instructions, and once more,
-// whole, as the description of its one tool.
+// whole, as the description of its one tool. They are said as the agent
+// uses the tool: a program runs on a Mac, under what bounds, and what
+// it sees there. Whose Mac it is, and what else it does, they leave out.
 func hostToolWords(notice sandbox.HostToolsNotice) string {
 	gpu, name := hostToolsWithoutGPU, hostToolsWithoutName
 	if notice.GPU {
@@ -61,17 +63,17 @@ func hostToolWords(notice sandbox.HostToolsNotice) string {
 	}
 	shared := sandbox.SharedFolderPath
 	return strings.Join([]string{
-		"Run a program of the Mac that hosts this sandbox, and return its exit status and the start of what it printed. " +
-			"Use it for what needs the Mac: its compilers, an application installed there, its GPU where it is given.",
+		"Run a program on a Mac, in a restricted macOS environment, and return its exit status and the start of what it printed. " +
+			"Use it for what needs macOS: its compilers, an application installed there, its GPU where it is given.",
 		"`argv` is the program and its arguments, as a list. No shell reads it: to use one, run it (`[\"bash\", \"-c\", \"...\"]`). " +
 			"`dir` is the folder the program starts in, named from " + shared + "; `env` adds variables; `seconds` is how long the run may take: " +
 			fmt.Sprintf("%d where you do not say, %d at most.", sandbox.HostToolDefaultSeconds, sandbox.HostToolMaxSeconds),
 		fmt.Sprintf("It answers with the start of what the program printed, %d KiB of each stream. Send long output to a file.", sandbox.HostToolMaxOutput>>10),
-		"The program sees " + shared + " and nothing else of this sandbox. The Mac has that folder under another path, which is where the program starts: " +
+		"Of your files the program sees " + shared + " and nothing else. The Mac has that folder under another path, which is where the program starts: " +
 			"name files from there, put there what the program needs, and find there what it made. It has a home and a temporary folder of its own, which you do not see.",
 		"It reads what is installed on the Mac: /Applications, Homebrew under /opt/homebrew, the system's tools and its compilers. " +
-			"It has no network, none of your user's files and no window: have a program write pictures, and look at those.",
-		"What is not installed on the Mac, fetch here, in the sandbox, built for macOS, into " + shared + ": a program runs from there. It cannot fetch anything itself.",
+			"It has no network, no other file of the Mac and no window: have a program write pictures, and look at those.",
+		"What is not installed on the Mac, fetch yourself, built for macOS, into " + shared + ": a program runs from there. It cannot fetch anything itself.",
 		gpu,
 		name,
 	}, "\n\n")
@@ -89,7 +91,7 @@ var hostToolRunSchema = json.RawMessage(fmt.Sprintf(`{
   "required": ["argv"]
 }`, sandbox.HostToolMaxSeconds, sandbox.HostToolDefaultSeconds))
 
-// hostToolServer is the MCP server host: one tool, run, which hands a
+// hostToolServer is the MCP server macos: one tool, run, which hands a
 // call to the Link at socket. notice is what the sandbox's Host Tool
 // Wall was given, which an agent is told.
 func hostToolServer(socket string, notice sandbox.HostToolsNotice) mcpServer {
@@ -151,7 +153,7 @@ func describeHostToolResult(request sandbox.HostToolRequest, result sandbox.Host
 		fmt.Fprintf(&b, "Exit status %d.\n", result.ExitCode)
 	}
 	if result.Truncated {
-		fmt.Fprintf(&b, "It printed more than is shown: the first %d KiB of each stream. Send long output to a file in the Shared Folder.\n", sandbox.HostToolMaxOutput>>10)
+		fmt.Fprintf(&b, "It printed more than is shown: the first %d KiB of each stream. Send long output to a file, and read it under %s.\n", sandbox.HostToolMaxOutput>>10, sandbox.SharedFolderPath)
 	}
 	for _, stream := range []struct{ name, text string }{{"stdout", result.Stdout}, {"stderr", result.Stderr}} {
 		if stream.text == "" {

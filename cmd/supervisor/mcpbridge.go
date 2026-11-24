@@ -47,7 +47,7 @@ func bridged(cfg sandbox.SupervisorConfig, self, name string) (command []string,
 	case name == sandbox.HostToolServer && cfg.HostTools != nil:
 		return []string{self, "host-tools"}, nil, nil
 	}
-	return nil, nil, fmt.Errorf("this sandbox has no MCP server %q", name)
+	return nil, nil, fmt.Errorf("there is no MCP server %q here", name)
 }
 
 // mcpBridge runs the sandbox's MCP server of a name, which speaks over

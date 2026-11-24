@@ -21,7 +21,7 @@ internal/chargrid/      characters drawn into an image, each in a cell of a grid
 internal/dashboard/     the window: MyGo native UI views and their state
 cmd/gatekeeper/         runs in the gatekeeper container: the ruleset, the probe, the lease
 cmd/tun/                in the gatekeeper's image: makes a sandbox's TUN device and moves its packets
-cmd/supervisor/         PID 1 of the workstation; also the MCP servers `host` and `sandbox`, their bridge, and the workstation's end of the sandbox's Link
+cmd/supervisor/         PID 1 of the workstation; also the MCP servers `macos` and `sandbox`, their bridge, and the workstation's end of the sandbox's Link
 cmd/carrier/            runs on the Mac, one for a sandbox: carries its traffic on sockets bound to an interface; with the Carrier Wall
 cmd/appicon/            draws resources/icon.png: a zeolite's cage in ASCII art, in the palette's colors
 cmd/masthead/           draws docs/masthead.gif, the README's Masthead: the cage turning, and the app's name in italic letters made of characters that tremble

@@ -14,10 +14,12 @@ import (
 // which it tells its user of its state. Both are an mcpServer: a name,
 // what an agent is told when it meets the server, and its tools.
 //
-// Everything an agent is told of its sandbox, it is told here: in a
-// server's instructions, and again in each tool's description, since a
-// client may show its model the one and not the other. No file is
-// written into the sandbox's Home for it.
+// What an agent is told, it is told here, and it is how to use a tool:
+// in a server's instructions, and again in each tool's description,
+// since a client may show its model the one and not the other. What is
+// said of a tool is true of it. Nothing describes the sandbox beyond
+// that, and no file is written into its Home: where it works, an agent
+// finds out.
 
 // mcpTool is one tool of a server.
 type mcpTool struct {

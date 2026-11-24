@@ -532,7 +532,7 @@ func TestRequestsAreServedSideBySide(t *testing.T) {
 		}
 		return true
 	})
-	if got := served.Run(ctx, sh("echo too-many")); !strings.Contains(got.Refused, "at once") {
+	if got := served.Run(ctx, sh("echo too-many")); got.Refused != fmt.Sprintf("%d runs are under way, which is as many as there are at once: wait for one to end", sandbox.HostToolMaxRuns) {
 		t.Errorf("one run too many was answered %+v", got)
 	}
 	// While they are served, the sandbox's Scratch is not deleted.
@@ -563,7 +563,7 @@ func TestRequestsAreServedSideBySide(t *testing.T) {
 	for _, pid := range rest {
 		gone(t, pid, "a run whose sandbox's Host Tools were closed")
 	}
-	if got := served.Run(ctx, sh("echo late")); got.Refused == "" || got.Stdout != "" {
+	if got := served.Run(ctx, sh("echo late")); got.Refused != "no more programs are run on the Mac from here" || got.Stdout != "" {
 		t.Errorf("a request after the Host Tools were closed was answered %+v", got)
 	}
 	// Its Scratch can be deleted now; and closing twice is closing once.

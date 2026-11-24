@@ -40,8 +40,7 @@ func main() {
 		}
 		err = hostToolServer(linkSocket, notice).serve(os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "state":
-		cfg, _ := readConfig(configPath)
-		err = stateServer(linkSocket, cfg.SharedFolder, ownSession).serve(os.Stdin, os.Stdout)
+		err = stateServer(linkSocket, ownSession).serve(os.Stdin, os.Stdout)
 	default:
 		fmt.Fprintln(os.Stderr, "usage: supervisor run | mcp-bridge <name> | shell <session-id> | hangup <session-id> | link | host-tools | state")
 		os.Exit(2)

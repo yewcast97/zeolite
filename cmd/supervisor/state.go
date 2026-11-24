@@ -56,7 +56,7 @@ func processParent(pid int) (int, bool) {
 
 // errNoSession is why a tool of the server cannot say anything of its
 // agent's session.
-var errNoSession = errors.New("this server was not started from a Terminal Session of the sandbox: there is no session to speak for")
+var errNoSession = errors.New("this server was not started from a terminal session: there is no session to call your user to")
 
 // ownSession is the ID of the Terminal Session this process descends
 // from.
@@ -79,32 +79,24 @@ func ownSession() (string, error) {
 }
 
 // What an agent is told of raising its hand: once in the server's
-// instructions, and once more, whole, as the tool's description.
-const raiseHandWords = "Call your user to this session: it lights a mark on the session, and beside this sandbox's name, in your user's window. " +
+// instructions, and once more, whole, as the tool's description. It is
+// said as the agent uses the tool: what it is for, how it is called and
+// when. How its user is shown the hand is the app's to know.
+const raiseHandWords = "Draw your user's attention to this session, for them to step in. " +
 	"It takes no arguments and carries no words: first say what you need in your own output, then call this, then wait there for the answer. " +
 	"Call it only when you cannot go on without your user: a decision that is theirs to make, a secret or a permission you lack. " +
 	"Do not call it to report progress."
 
-// What an agent is told of where it works, in the server's
-// instructions: in the sandbox's Home, and of its Shared Folder where
-// it is given one.
-const (
-	workInHome   = "You work in a sandbox, a container of your own. Your user watches it from a window on their Mac, and does not follow what you do line by line. " + sandbox.HomePath + ", where you start, is this sandbox's own folder: it is kept from one start to the next, and no other sandbox sees it."
-	workInShared = sandbox.SharedFolderPath + " is a Shared Folder, kept on the Mac that hosts this sandbox: the agents of the other sandboxes that are given it read and write it too. Put there what they, or your user, are to find."
-)
-
 // stateServer is the MCP server sandbox, whose tool speaks for the
-// Terminal Session session reports, through the Link at socket. shared
-// is whether the sandbox is given a Shared Folder.
-func stateServer(socket string, shared bool, session func() (string, error)) mcpServer {
-	instructions := workInHome
-	if shared {
-		instructions += "\n\n" + workInShared
-	}
-	instructions += "\n\nThe tool `" + sandbox.RaiseHandTool + "` of this server: " + raiseHandWords
+// Terminal Session session reports, through the Link at socket.
+//
+// Its instructions are its tool's, and say nothing else: not what the
+// agent works in, not what hosts it, not what its folders are. Those an
+// agent finds out, as it would anywhere.
+func stateServer(socket string, session func() (string, error)) mcpServer {
 	return mcpServer{
 		name:         sandbox.StateServer,
-		instructions: instructions,
+		instructions: "The tool `" + sandbox.RaiseHandTool + "` of this server: " + raiseHandWords,
 		tools: []mcpTool{{
 			name:        sandbox.RaiseHandTool,
 			description: raiseHandWords,
@@ -121,7 +113,7 @@ func stateServer(socket string, shared bool, session func() (string, error)) mcp
 				case answer.Refused != "":
 					return "Your hand is not raised: " + answer.Refused, true, nil
 				}
-				return "Your hand is raised: your user sees a mark on this session. Wait here for their answer.", false, nil
+				return "Your hand is raised: your user is called to this session. Wait here for their answer.", false, nil
 			},
 		}},
 	}

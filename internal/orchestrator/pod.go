@@ -836,7 +836,8 @@ func (s endsWithItsSandbox) Read(p []byte) (int, error) {
 func (o *Orchestrator) startWorkstation(ctx, podCtx context.Context, p *pod, image, timezone string, packs []pack.Manifest) error {
 	cfg, sharedFolder := p.cfg, p.sharedFolder
 	// That the workstation mounts a Shared Folder is the supervisor's to
-	// know, and to tell agents.
+	// know: where it mounts none, an empty folder one left in the Home
+	// goes.
 	supervisor := sandbox.SupervisorConfig{SharedFolder: sharedFolder != ""}
 	if cfg.HostTools.Enabled {
 		// The supervisor registers the server by which the agent runs

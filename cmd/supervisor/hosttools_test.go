@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -120,15 +121,15 @@ func TestTheLinkCarriesAsksAndAnswers(t *testing.T) {
 		t.Errorf("an ask that named a number and a withdrawal was sent on as %+v", sent)
 	} else {
 		// What the app refuses is told as a refusal.
-		json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: sent.ID, Refused: "this sandbox is given no Host Tools"})
+		json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: sent.ID, Refused: "running programs on the Mac is not allowed here"})
 	}
-	if got := <-forged; got.Refused != "this sandbox is given no Host Tools" {
+	if got := <-forged; got.Refused != "running programs on the Mac is not allowed here" {
 		t.Errorf("an ask the app refused was answered %+v", got)
 	}
 	refused := run(sandbox.HostToolRequest{Argv: []string{"refused"}}, nil)
 	id, _ := a.request()
-	json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: id, Refused: "this sandbox is given no Host Tools"})
-	if got := <-refused; got.err != nil || got.result.Refused != "this sandbox is given no Host Tools" {
+	json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: id, Refused: "running programs on the Mac is not allowed here"})
+	if got := <-refused; got.err != nil || got.result.Refused != "running programs on the Mac is not allowed here" {
 		t.Errorf("a Host Tool's request the app refused was answered %+v", got)
 	}
 
@@ -162,7 +163,7 @@ func TestTheLinkCarriesAsksAndAnswers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the link went on after its stream ended")
 	}
-	if _, err := askHostTool(a.socket, sandbox.HostToolRequest{Argv: []string{"late"}}, nil); err == nil || !strings.Contains(err.Error(), "Link to the app is not open") {
+	if _, err := askHostTool(a.socket, sandbox.HostToolRequest{Argv: []string{"late"}}, nil); err == nil || !strings.Contains(err.Error(), "what answers this tool is not connected now") {
 		t.Errorf("asking after the link ended: %v", err)
 	}
 }
@@ -236,11 +237,11 @@ func TestTheServerHasOneTool(t *testing.T) {
 
 	c.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`)
 	id, result, _ := c.reply()
-	if info, _ := result["serverInfo"].(map[string]any); id != "1" || result["protocolVersion"] != "2025-06-18" || info["name"] != "host" || result["capabilities"].(map[string]any)["tools"] == nil {
+	if info, _ := result["serverInfo"].(map[string]any); id != "1" || result["protocolVersion"] != "2025-06-18" || info["name"] != "macos" || result["capabilities"].(map[string]any)["tools"] == nil {
 		t.Errorf("the server introduced itself as %v", result)
 	}
 	// What an agent is told of the server is told as it meets it.
-	if told, _ := result["instructions"].(string); !strings.HasPrefix(told, "The tool `run` of this server: Run a program of the Mac that hosts this sandbox") {
+	if told, _ := result["instructions"].(string); !strings.HasPrefix(told, "The tool `run` of this server: Run a program on a Mac, in a restricted macOS environment") {
 		t.Errorf("the server's instructions are %q", told)
 	}
 	// A notification is answered by nothing: the next answer is the
@@ -286,7 +287,7 @@ func TestTheServerHasOneTool(t *testing.T) {
 	}
 	id, result, _ = c.reply()
 	said, failed := text(result)
-	if id != "6" || failed || said != "Exit status 2.\nIt printed more than is shown: the first 256 KiB of each stream. Send long output to a file in the Shared Folder.\n--- stdout ---\nrendered\n--- stderr ---\na warning\n" {
+	if id != "6" || failed || said != "Exit status 2.\nIt printed more than is shown: the first 256 KiB of each stream. Send long output to a file, and read it under /workspace/shared.\n--- stdout ---\nrendered\n--- stderr ---\na warning\n" {
 		t.Errorf("the run was told as %q (error %v)", said, failed)
 	}
 
@@ -320,21 +321,21 @@ func TestTheServerHasOneTool(t *testing.T) {
 
 // Where the sandbox's Link is not open, nothing listens: the tool says
 // so. And where the app refuses a request, as for a sandbox that is
-// given no Host Tools, the tool says why, in the app's words.
+// given no Host Tools, the tool says why, as the app answered it.
 func TestTheServerSaysWhenThereAreNoHostTools(t *testing.T) {
 	c := startServer(t, filepath.Join(t.TempDir(), "nothing-listens.sock"))
 	c.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"argv":["ls"]}}}`)
 	_, result, _ := c.reply()
-	if said, failed := text(result); !failed || !strings.Contains(said, "Link to the app is not open") {
+	if said, failed := text(result); !failed || !strings.Contains(said, "what answers this tool is not connected now") {
 		t.Errorf("with no link the tool says %q", said)
 	}
 	a := startLink(t)
 	c = startServer(t, a.socket)
 	c.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"argv":["ls"]}}}`)
 	id, _ := a.request()
-	json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: id, Refused: "this sandbox is given no Host Tools: its user gives them in its Setup"})
+	json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: id, Refused: "running programs on the Mac is not allowed here: ask your user to allow it"})
 	_, result, _ = c.reply()
-	if said, failed := text(result); !failed || said != "Not run: this sandbox is given no Host Tools: its user gives them in its Setup" {
+	if said, failed := text(result); !failed || said != "Not run: running programs on the Mac is not allowed here: ask your user to allow it" {
 		t.Errorf("refused by the app, the tool says %q", said)
 	}
 }
@@ -361,9 +362,10 @@ func TestTheServerTellsAnAgentOfHostTools(t *testing.T) {
 	}
 	instructions, description := described(sandbox.HostToolsNotice{})
 	for _, want := range []string{
-		"Run a program of the Mac that hosts this sandbox", `["bash", "-c", "..."]`, "named from /workspace/shared",
+		"Run a program on a Mac, in a restricted macOS environment", `["bash", "-c", "..."]`, "named from /workspace/shared",
 		"600 where you do not say, 1500 at most", "256 KiB of each stream", "It has no network",
-		"fetch here, in the sandbox, built for macOS, into /workspace/shared",
+		"Of your files the program sees /workspace/shared and nothing else", "no other file of the Mac",
+		"fetch yourself, built for macOS, into /workspace/shared",
 		"The Mac's GPU is not given", "The Mac's name is not given",
 	} {
 		if !strings.Contains(description, want) {
@@ -377,6 +379,12 @@ func TestTheServerTellsAnAgentOfHostTools(t *testing.T) {
 		if strings.Contains(text, "%!") || strings.Contains(text, "%d") || strings.Contains(text, "%s") {
 			t.Errorf("something of what an agent is told was left to be filled in:\n%s", text)
 		}
+	}
+	// It is said as the agent uses the tool: a Mac, and what a program
+	// has there. Nothing says whose Mac it is or what else it does, and
+	// nothing is named in the app's own words.
+	if named := notAnAgentsWords.FindAllString(description, -1); len(named) != 0 {
+		t.Errorf("the tool's description names %q:\n%s", named, description)
 	}
 	// With the GPU and the name: which programs have the GPU, the way
 	// to the rest, and that its sh is bash.
@@ -396,13 +404,13 @@ func TestTheServerTellsAnAgentOfHostTools(t *testing.T) {
 
 // The server by which an agent tells of its state has one tool, which
 // raises its hand: the server says for which Terminal Session, and the
-// Link carries it. What an agent is told of its sandbox, and of when to
-// raise its hand, the server tells it.
+// Link carries it. What the server tells an agent is that tool's own
+// words, and nothing of where the agent works.
 func TestTheStateServerRaisesAHand(t *testing.T) {
 	a := startLink(t)
 	session := "aaa"
 	var sessionErr error
-	c := serveClient(t, stateServer(a.socket, false, func() (string, error) { return session, sessionErr }))
+	c := serveClient(t, stateServer(a.socket, func() (string, error) { return session, sessionErr }))
 
 	c.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
 	_, result, _ := c.reply()
@@ -410,13 +418,10 @@ func TestTheStateServerRaisesAHand(t *testing.T) {
 	if info, _ := result["serverInfo"].(map[string]any); info["name"] != "sandbox" {
 		t.Errorf("the server introduced itself as %v", result)
 	}
-	for _, want := range []string{"You work in a sandbox", "/workspace, where you start, is this sandbox's own folder", "The tool `raise_hand` of this server", "only when you cannot go on without your user", "Do not call it to report progress"} {
+	for _, want := range []string{"The tool `raise_hand` of this server", "only when you cannot go on without your user", "Do not call it to report progress"} {
 		if !strings.Contains(told, want) {
 			t.Errorf("the server's instructions do not say %q:\n%s", want, told)
 		}
-	}
-	if strings.Contains(told, "/workspace/shared") {
-		t.Errorf("a sandbox with no Shared Folder is told of one:\n%s", told)
 	}
 	c.send(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	_, result, _ = c.reply()
@@ -426,8 +431,23 @@ func TestTheStateServerRaisesAHand(t *testing.T) {
 	}
 	tool := tools[0].(map[string]any)
 	schema, _ := tool["inputSchema"].(map[string]any)
-	if description, _ := tool["description"].(string); tool["name"] != "raise_hand" || schema["type"] != "object" || !strings.HasPrefix(description, "Call your user to this session") || !strings.Contains(description, "carries no words") || !strings.Contains(description, "Do not call it to report progress") {
+	description, _ := tool["description"].(string)
+	if tool["name"] != "raise_hand" || schema["type"] != "object" || !strings.HasPrefix(description, "Draw your user's attention to this session, for them to step in.") || !strings.Contains(description, "carries no words") || !strings.Contains(description, "Do not call it to report progress") {
 		t.Errorf("the tool is %v", tool)
+	}
+	// The instructions are the tool's words under its name, and no
+	// sentence beside them: an agent is not told what it works in, what
+	// hosts it or what its folders are.
+	if told != "The tool `raise_hand` of this server: "+description {
+		t.Errorf("the server's instructions say more than its tool does:\n%s", told)
+	}
+	if named := describesWhereAnAgentWorks.FindAllString(told, -1); len(named) != 0 {
+		t.Errorf("the server's words name %q:\n%s", named, told)
+	}
+	// Nor is it said how the app shows a hand, which is nothing an agent
+	// works with.
+	if named := append(notAnAgentsWords.FindAllString(told, -1), howAHandIsShown.FindAllString(told, -1)...); len(named) != 0 {
+		t.Errorf("the server's words name %q:\n%s", named, told)
 	}
 
 	// A call hands the session to the Link, and nothing else: no word
@@ -448,24 +468,28 @@ func TestTheStateServerRaisesAHand(t *testing.T) {
 	// With no arguments at all, as the tool asks for.
 	c.send(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"raise_hand"}}`)
 	asked = a.ask()
-	json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: asked.ID, Refused: "the hand is raised from no Terminal Session the app opened in this sandbox"})
+	json.NewEncoder(a.answers).Encode(sandbox.LinkAnswer{ID: asked.ID, Refused: "this is not a session your user has open"})
 	_, result, _ = c.reply()
-	if said, failed := text(result); !failed || !strings.Contains(said, "Your hand is not raised: the hand is raised from no Terminal Session") {
+	if said, failed := text(result); !failed || !strings.Contains(said, "Your hand is not raised: this is not a session your user has open") {
 		t.Errorf("a hand the app refused was answered %q (error %v)", said, failed)
 	}
 	// A server that descends from no Terminal Session asks nothing.
 	sessionErr = errNoSession
 	c.send(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"raise_hand","arguments":{}}}`)
 	_, result, _ = c.reply()
-	if said, failed := text(result); !failed || !strings.Contains(said, "not started from a Terminal Session") {
+	if said, failed := text(result); !failed || !strings.Contains(said, "not started from a terminal session: there is no session to call your user to") {
 		t.Errorf("with no session the tool says %q (error %v)", said, failed)
 	}
-
-	// A sandbox that is given a Shared Folder is told of it.
-	c = serveClient(t, stateServer(a.socket, true, func() (string, error) { return "aaa", nil }))
-	c.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
-	_, result, _ = c.reply()
-	if told, _ := result["instructions"].(string); !strings.Contains(told, "/workspace/shared is a Shared Folder, kept on the Mac that hosts this sandbox") {
-		t.Errorf("a sandbox with a Shared Folder is told:\n%s", told)
-	}
 }
+
+// describesWhereAnAgentWorks finds what the server sandbox does not
+// name: what a sandbox is made of, what hosts it, and a path in it.
+var describesWhereAnAgentWorks = regexp.MustCompile(`(?i)\b(mac|macos|darwin|apple|linux|debian|container|docker|colima|vm|virtual machine|host|hosts|hosted)\b|/workspace`)
+
+// notAnAgentsWords finds what no tool's description says: the app's own
+// names for things, how the app shows something to its user, and what
+// hosts the agent.
+var notAnAgentsWords = regexp.MustCompile(`(?i)\b(sandbox|card|hosts|hosted|container|docker|vm|shared folder|host tools?|wall|scratch|link)\b`)
+
+// howAHandIsShown finds how the app shows a raised hand to its user.
+var howAHandIsShown = regexp.MustCompile(`(?i)\b(window|mark|lights?|glyph)\b`)

@@ -1395,7 +1395,7 @@ func TestHostToolsInTheSetup(t *testing.T) {
 	}
 	texts := h.told("About Host Tools")
 	for _, want := range []string{
-		"by the tool run of the MCP server host", "under the Host Tool Wall", "/Applications, Homebrew and the system's own",
+		"by the tool run of the MCP server macos", "under the Host Tool Wall", "/Applications, Homebrew and the system's own",
 		"none of your files, no network, no other program, no window", "which applications you have installed",
 		"fills this Mac's disk, which nothing bounds", "do not open it as a program",
 	} {
