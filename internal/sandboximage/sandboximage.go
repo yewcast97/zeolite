@@ -61,11 +61,20 @@ ENTRYPOINT ["` + GatekeeperPath + `", "run"]
 // every sandbox needs whatever its packs: the timezones' data for the
 // Clock Policy, socat for the Viewport Stream's connection, and the
 // supervisor.
+//
+// A workstation's user is not root and its root is read-only: what a
+// package of Debian's holds and the image lacks, nothing installs while
+// the sandbox runs. So the image has what that work takes for granted
+// where one develops: the compiler, make and Python's headers, with
+// which npm and pip build a package that none is built of for the
+// workstation's architecture; the ssh client, by which git reaches a
+// remote that is named for it; and unzip and xz, which installers and
+// archives ask for.
 const workstationDockerfile = `FROM node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git less procps \
-      python3 python3-pip python3-venv socat tzdata vim-tiny \
+      bash build-essential ca-certificates curl git less openssh-client procps \
+      python3 python3-dev python3-pip python3-venv socat tzdata unzip vim-tiny xz-utils \
  && rm -rf /var/lib/apt/lists/* \
  && userdel --remove node \
  && useradd --uid 1000 --home-dir /workspace --no-create-home --shell /bin/bash agent

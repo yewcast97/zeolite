@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -117,6 +118,26 @@ func TestWorkstationImageHasThePacksLayers(t *testing.T) {
 	onlyBrowser, _ := Workstation("arm64", []pack.Manifest{browser})
 	if reordered.Tag != with.Tag || onlyBrowser.Tag != with.Tag {
 		t.Errorf("tags %q, %q, %q differ for the same layers", with.Tag, reordered.Tag, onlyBrowser.Tag)
+	}
+}
+
+// A workstation's user is not root and its root is read-only, so what
+// its work needs of Debian's packages is in every workstation's image,
+// whatever its packs: the compiler and make, Python's headers, the ssh
+// client, unzip and xz.
+func TestEveryWorkstationImageHasWhatBuildsAndUnpacks(t *testing.T) {
+	base, err := Workstation("arm64", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := dockerfile(base)
+	// The packages of the image's own step, which is its first.
+	install, _, _ := strings.Cut(df, "&& rm -rf /var/lib/apt/lists/*")
+	installed := strings.Fields(install)
+	for _, pkg := range []string{"build-essential", "python3-dev", "openssh-client", "unzip", "xz-utils"} {
+		if !slices.Contains(installed, pkg) {
+			t.Errorf("the image's own step does not install %s:\n%s", pkg, install)
+		}
 	}
 }
 

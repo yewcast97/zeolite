@@ -63,6 +63,18 @@ func TestWorkstationIsolation(t *testing.T) {
 	check("the home directory", "echo $HOME", "/workspace")
 	check("Node.js", "node --version", "v22.")
 	check("Python", "python3 --version", "Python 3.")
+	// Nothing installs a package of Debian's while the sandbox runs, its
+	// user not being root and its root read-only. What its work takes for
+	// granted is in the image: a C and a C++ program are built and run, a
+	// file is compiled against Python's headers, the ssh client makes a
+	// key, and an archive of zip's and one of xz's are unpacked.
+	check("a C program", `cd /tmp && printf '#include <stdio.h>\nint main(void) { puts("built in C"); return 0; }\n' > a.c && gcc a.c -o a && ./a`, "built in C")
+	check("a C++ program", `cd /tmp && printf '#include <iostream>\nint main() { std::cout << "built in C++" << std::endl; }\n' > b.cc && g++ b.cc -o b && ./b`, "built in C++")
+	check("make", `cd /tmp && printf 'all:\n\t@echo made\n' > Makefile && make`, "made")
+	check("Python's headers", `cd /tmp && printf '#include <Python.h>\nint version(void) { return PY_MAJOR_VERSION; }\n' > p.c && gcc $(python3-config --includes) -c p.c -o p.o && echo compiled`, "compiled")
+	check("the ssh client", "cd /tmp && ssh -V 2>&1 && ssh-keygen -q -t ed25519 -N '' -f key && cat key.pub", "ssh-ed25519")
+	check("an archive of zip's", `cd /tmp && python3 -c 'import zipfile; zipfile.ZipFile("a.zip", "w").writestr("in.txt", "unzipped")' && unzip -p a.zip in.txt`, "unzipped")
+	check("an archive of xz's", "cd /tmp && echo unpacked > x.txt && tar -cJf x.tar.xz x.txt && rm x.txt && tar -xJf x.tar.xz && cat x.txt", "unpacked")
 	check("the MCP registry OpenCode is sent to", `cat "$OPENCODE_CONFIG"`, `"mcp"`)
 
 	// The clock is this Mac's, in Tokyo, for every program alike. A date
