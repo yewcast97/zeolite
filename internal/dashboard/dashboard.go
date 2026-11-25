@@ -389,6 +389,11 @@ func (d *Dashboard) View(c *ui.Context) {
 	d.selectSomething(folders)
 	d.see()
 	selected := d.view(d.selected)
+	// The sidebar keeps its bounds, whatever its edge was dragged to and
+	// however the window was resized since: the width is written back, so
+	// that the divider stops where the sidebar does.
+	window, _ := c.Size()
+	d.sidebarWidth = fitSidebar(d.sidebarWidth, window, sidebarLeast(c.TitleBar().Left))
 	ui.Split(c, &d.sidebarWidth, func() { d.sidebarView(c, folders) }, func() {
 		if name, ok := sharedFolderOf(d.selected); ok {
 			d.folderView(name).view(c)

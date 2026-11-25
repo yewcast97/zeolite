@@ -4336,3 +4336,101 @@ func TestAWayOutMayAnswerNamesWithStandInAddresses(t *testing.T) {
 		t.Error("what the form says of stand-in addresses speaks of interfaces")
 	}
 }
+
+// dragDivider drags the divider at a point to another, as a pointer
+// does, and calls each after every frame of the drag.
+func (h *harness) dragDivider(fromX, fromY, toX, toY float32, each func()) {
+	h.t.Helper()
+	h.tt.Press(fromX, fromY)
+	h.tt.Frame()
+	for _, f := range []float32{0.1, 0.3, 0.5, 0.7, 0.9, 1} {
+		h.tt.Move(fromX+(toX-fromX)*f, fromY+(toY-fromY)*f)
+		h.tt.Frame()
+		each()
+	}
+	h.tt.Release(toX, toY)
+	h.tt.Frame()
+	each()
+}
+
+// The sidebar's edge stays right of the window's controls, which sit over
+// the sidebar, as far from the last of them as the first is from the
+// window's edge, and the sidebar takes a fifth of the window's width at
+// most: wherever its divider is dragged, and when the window is made
+// narrower.
+func TestTheSidebarKeepsItsBounds(t *testing.T) {
+	h := newHarness(t, []sandbox.Config{gated("s1", "Research")})
+	// The window's controls as macOS has them: the first 7 from the
+	// window's edge, the last ending at 61. The sidebar's edge is 7 right
+	// of that.
+	const controls, least = 61, 68
+	h.tt.SetSize(1280, 900)
+	h.tt.SetTitleBar(ui.TitleBar{Left: controls, Height: 28, Bottom: 52})
+	h.tt.Frame()
+
+	// edge is where the sidebar ends, as the window lays it out: where
+	// the page begins.
+	edge := func() float32 {
+		t.Helper()
+		page, ok := h.tt.Find("Start")
+		divider, ok2 := h.tt.Find("Divider")
+		if !ok || !ok2 {
+			t.Fatalf("no page beside the sidebar: %q", h.tt.Texts())
+		}
+		if divider.X > page.X {
+			t.Fatalf("the divider is at %v, right of the page's Start at %v", divider.X, page.X)
+		}
+		return divider.X
+	}
+	window := float32(1280)
+	within := func() {
+		t.Helper()
+		if at := edge(); at < least || at > window*sidebarShare || at != h.d.sidebarWidth {
+			t.Fatalf("the sidebar ends at %v and is kept as %v wide, in a window %v wide whose controls end at %v", at, h.d.sidebarWidth, window, float32(controls))
+		}
+	}
+	if edge() != sidebarWidth {
+		t.Fatalf("the sidebar ends at %v in a window 1280 wide, want %v", edge(), float32(sidebarWidth))
+	}
+
+	// Dragged all the way left, it stops as far right of the window's
+	// controls as they begin from the window's edge.
+	h.dragDivider(edge(), 400, 2, 400, within)
+	if edge() != least {
+		t.Errorf("dragged to the window's left edge, the sidebar ends at %v, want %v: the %v of the window's controls and the %v before them", edge(), float32(least), float32(controls), float32(least-controls))
+	}
+	for controls, want := range map[float32]float32{0: 0, 61: 68, 54: 54, 40: 40, 78: 102} {
+		if got := sidebarLeast(controls); got != want {
+			t.Errorf("under controls that end at %v the sidebar is %v wide at the least, want %v", controls, got, want)
+		}
+	}
+	// Dragged all the way right, at a fifth of the window.
+	h.dragDivider(edge(), 400, 1200, 400, within)
+	if edge() != 1280*sidebarShare {
+		t.Errorf("dragged to the window's right edge, the sidebar ends at %v, want a fifth of 1280", edge())
+	}
+	// A narrower window presses it to its fifth, and a wider one after
+	// that leaves it there.
+	window = 900
+	h.tt.SetSize(900, 600)
+	h.tt.Frame()
+	within()
+	if edge() != 180 {
+		t.Errorf("in a window 900 wide the sidebar ends at %v, want 180", edge())
+	}
+	window = 1280
+	h.tt.SetSize(1280, 900)
+	h.tt.Frame()
+	within()
+	if edge() != 180 {
+		t.Errorf("after the window was 900 wide the sidebar ends at %v, want the 180 it was pressed to", edge())
+	}
+	// In full screen the window has no controls: the sidebar keeps the
+	// room a divider leaves either side of itself.
+	h.tt.SetTitleBar(ui.TitleBar{})
+	h.tt.Frame()
+	h.dragDivider(edge(), 400, 2, 400, func() {})
+	if at := edge(); at <= 0 || at >= controls {
+		t.Errorf("with no window controls, dragged to the left edge, the sidebar ends at %v", at)
+	}
+}

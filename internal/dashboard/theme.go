@@ -34,8 +34,16 @@ const (
 	// page, under which the window's own title bar hides.
 	headerHeight = 48
 	// sidebarWidth is how wide the sidebar is until its user drags its
-	// edge.
+	// edge, where the window is wide enough for that, and sidebarShare the
+	// largest part of the window's width it takes: a fifth.
 	sidebarWidth = 220
+	sidebarShare = 1.0 / 5
+	// windowControlsSpan is how far it is from the left edge of the
+	// first of the window's three controls to the right edge of the last,
+	// as macOS lays them out: each 14 wide, 20 from one's left edge to
+	// the next's. The toolkit says where the last ends, and this says
+	// from there where the first begins.
+	windowControlsSpan = 54
 )
 
 // The measures of glyphs.

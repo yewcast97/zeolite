@@ -38,6 +38,24 @@ func (d *Dashboard) cards() []card {
 	return append(first, rest...)
 }
 
+// sidebarLeast is the least width the sidebar has under the window's
+// controls, which end this far from the window's left edge: its edge
+// stands as far right of the last control as the first stands from the
+// window's edge. A window that shows no controls, as in full screen,
+// asks for nothing.
+func sidebarLeast(controls float32) float32 {
+	return controls + max(controls-windowControlsSpan, 0)
+}
+
+// fitSidebar is the width the sidebar has, of the width its user dragged
+// it to, in a window this wide: no wider than sidebarShare of the
+// window, and no narrower than least, which keeps its edge clear of the
+// window's controls. Where the two cannot both hold, the controls are
+// kept clear.
+func fitSidebar(width, window, least float32) float32 {
+	return max(min(width, window*sidebarShare), least)
+}
+
 // The sidebar's two parts, as it names them.
 const (
 	sidebarSandboxes     = "Sandboxes"
