@@ -41,7 +41,7 @@ func (v *sandboxView) sessionGlyphSays(s *session) (label, tip string) {
 	title := agentTitle(s.agent)
 	where := "hidden"
 	tip = title + " · hidden: drag it onto a Pane to show it there"
-	if len(v.panes) < maxPanes {
+	if v.roomForPane() {
 		tip = title + " · hidden: click to show it in a new Pane, or drag it onto a Pane"
 	}
 	for i, p := range v.panes {

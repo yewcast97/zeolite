@@ -87,7 +87,7 @@ func TestPictures(t *testing.T) {
 	// Two Panes, three, and four, each with its login shell; and the MCP
 	// calls in their place.
 	for n := 2; n <= 4; n++ {
-		h.click(addPaneLabel)
+		h.click(h.besideLast())
 		h.settle("another Pane's shell", func() bool { return len(v.panes) == n && v.panes[n-1].session != nil })
 		h.connOf("s1", n-1).shell.Write([]byte("agent@sandbox:~$ "))
 		frame()
@@ -155,7 +155,22 @@ func TestPictures(t *testing.T) {
 	frame()
 	h.capture("8-shared-folder")
 
+	// Sixteen Panes, four by four, in the window as it opens and at its
+	// smallest.
+	h.d.selected = "s6"
+	frame()
+	h.click("Setup")
+	h.fill()
+	for i := range h.d.view("s6").panes {
+		h.connOf("s6", i).shell.Write([]byte("agent@sandbox:~$ "))
+	}
+	h.park()
+	frame()
+	h.capture("8a-sixteen-panes")
 	h.tt.SetSize(900, 600)
+	frame()
+	h.capture("9a-smallest-sixteen-panes")
+
 	h.d.selected = "s1"
 	frame()
 	h.capture("9-smallest")

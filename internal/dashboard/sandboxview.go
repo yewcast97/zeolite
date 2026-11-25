@@ -46,16 +46,19 @@ type sandboxView struct {
 	viewportTab    int
 	viewports      map[string]*viewportView
 	// sessions are the sandbox's Terminal Sessions, in the order they
-	// were opened, and panes its Panes, in the order they stand: one
-	// while it runs, and up to four. paneSeq numbers them as they are
-	// made.
+	// were opened. root is the page's one part while the sandbox runs: a
+	// Pane, or what a Pane was divided into. panes are its Panes in the
+	// order they stand, listed again whenever the parts change: one while
+	// the sandbox runs, and up to sixteen. paneSeq numbers the Panes as
+	// they are made, and partSeq the parts that are divided.
 	sessions []*session
+	root     *part
 	panes    []*pane
 	paneSeq  int
-	// columnShare is the percentage of the page's width the left Panes
-	// take, in both rows, and rowShare that of its height the upper ones
-	// take.
-	columnShare, rowShare float32
+	partSeq  int
+	// keyboard is the Pane the keyboard was in when the Panes were last
+	// built, nil where it was in none.
+	keyboard *pane
 	// lived counts the times the sandbox's sessions were closed with
 	// it: a shell that was being started meanwhile is not shown.
 	lived int
@@ -74,8 +77,6 @@ func newSandboxView(d *Dashboard, cfg sandbox.Config) *sandboxView {
 		draft:          newDraft(cfg, d.backend.Packs()),
 		viewportsShare: 55,
 		viewports:      map[string]*viewportView{},
-		columnShare:    50,
-		rowShare:       50,
 	}
 }
 
@@ -152,11 +153,9 @@ func (v *sandboxView) closeLive() {
 	v.viewportTab = 0
 }
 
-// What the Header's controls are called.
-const (
-	addPaneLabel  = "Add Pane"
-	mcpCallsLabel = "MCP Calls"
-)
+// mcpCallsLabel is what the Header's control that lists the MCP calls is
+// called.
+const mcpCallsLabel = "MCP Calls"
 
 func (v *sandboxView) view(c *ui.Context) {
 	cfg := v.d.config(v.id)
@@ -180,12 +179,6 @@ func (v *sandboxView) view(c *ui.Context) {
 				ui.Spacer(c)
 			}
 			live := v.live()
-			// Another Pane, while the Panes show and there is room for one.
-			if v.panesShown() && len(v.panes) < maxPanes {
-				if glyphButton(c, "add-pane", glyphAddPane, addPaneLabel).Clicked() {
-					v.addPane()
-				}
-			}
 			// The MCP calls, in the Panes' place, once there is one to
 			// list.
 			if running(v.status.State) && !v.showSetup && len(v.mcpCalls) > 0 {

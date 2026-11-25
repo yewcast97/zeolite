@@ -84,6 +84,23 @@ func glyphButtonIn(c *ui.Context, key string, g glyph, label, tip string, color 
 	return b.Draw(g.paint(color, glyphCell))
 }
 
+// dimmable is a glyphButton that is dimmed while it can do nothing, and
+// says why then to whoever rests the pointer on it: why, in the app's
+// own words, which is empty while the control can do what it says. A
+// dimmed control says nothing by itself, so the room it stands in says
+// it for it.
+func dimmable(c *ui.Context, key string, g glyph, label, tip, why string) ui.Element {
+	var b ui.Element
+	room := ui.Box(c).Key(key + "-room").Shrink(0)
+	if why != "" {
+		room.Tooltip(why)
+	}
+	room.Children(func() {
+		b = glyphButtonIn(c, key, g, label, tip, c.Theme().Text).Disabled(why != "")
+	})
+	return b
+}
+
 // info is the glyph that holds what would crowd the page: it shows the
 // explanation to whoever rests the pointer on it, or comes to it with
 // the keyboard.

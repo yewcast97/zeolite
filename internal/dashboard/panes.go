@@ -10,10 +10,6 @@ import (
 	"zeolite/internal/sandbox"
 )
 
-// maxPanes is how many Panes a running sandbox's page holds at most:
-// two rows of two.
-const maxPanes = 4
-
 // session is one Terminal Session held by the dashboard: a login shell
 // in a sandbox's workstation, and whatever its user started in it. It
 // ends when its Pane closes while it is a plain shell's, when its shell
@@ -63,8 +59,10 @@ type pane struct {
 	note    string
 	failed  bool
 	// focus is the terminal's view, by which a session that just came
-	// into the Pane is given the keyboard.
+	// into the Pane is given the keyboard, and box the Pane as the window
+	// lays it out, which says whether the keyboard is in it.
 	focus ui.Handle
+	box   ui.Handle
 }
 
 // What a Pane says while it shows no session.
@@ -73,11 +71,14 @@ const (
 	paneEnded   = "The shell ended."
 )
 
-// What the controls of a Pane's strip that are not always there are
-// called.
+// What the controls of a Pane's strip are called: the two that add a
+// Pane, by halving the one they stand on, and the two that are not
+// always there.
 const (
-	hideLabel      = "Hide"
-	closePaneLabel = "Close Pane"
+	addPaneBesideLabel = "Add Pane Beside"
+	addPaneBelowLabel  = "Add Pane Below"
+	hideLabel          = "Hide"
+	closePaneLabel     = "Close Pane"
 )
 
 // newSessionLabel is what the control that starts a login shell in a
@@ -87,21 +88,22 @@ const newSessionLabel = "New Session"
 // openFirstPane gives a sandbox whose workstation just started its
 // first Pane, with a login shell in it.
 func (v *sandboxView) openFirstPane() {
-	if len(v.panes) == 0 {
-		v.addPane()
-	}
-}
-
-// addPane adds a Pane, with a login shell in it, where there is room
-// for one.
-func (v *sandboxView) addPane() {
-	if len(v.panes) >= maxPanes || !running(v.status.State) {
+	if v.root != nil || !running(v.status.State) {
 		return
 	}
-	v.paneSeq++
-	p := &pane{key: v.paneSeq}
-	v.panes = append(v.panes, p)
+	p := v.newPane()
+	v.root = &part{pane: p}
+	v.arrange()
 	v.openShell(p)
+}
+
+// addPane halves a Pane and gives the other half, right of it or,
+// stacked, under it, to a new Pane with a login shell in it, where the
+// Pane can be divided so.
+func (v *sandboxView) addPane(p *pane, stacked bool) {
+	if added := v.divide(p, stacked); added != nil {
+		v.openShell(added)
+	}
 }
 
 // openShell starts a login shell in the sandbox's workstation, off the
@@ -285,12 +287,17 @@ func (v *sandboxView) show(s *session, target *pane) {
 // are built as they now stand: a session that just came into a Pane has
 // its terminal's view there only from the next frame on.
 func (v *sandboxView) giveKeyboard(p *pane) {
-	v.d.update(func() { p.focus.Focus() })
+	v.d.update(func() {
+		if slices.Contains(v.panes, p) {
+			p.focus.Focus()
+		}
+	})
 }
 
 // choose is a click on an Agent Session's glyph: one that is shown gets
 // the keyboard, and one that is Hidden a Pane of its own, where there is
-// room for another.
+// room for another: beside the last Pane that can still be divided, or
+// under it where no other stands beside it.
 func (v *sandboxView) choose(s *session) {
 	if !slices.Contains(v.sessions, s) {
 		return
@@ -299,13 +306,15 @@ func (v *sandboxView) choose(s *session) {
 		v.giveKeyboard(p)
 		return
 	}
-	if len(v.panes) >= maxPanes {
-		return
+	for _, from := range slices.Backward(v.panes) {
+		for _, stacked := range []bool{false, true} {
+			if added := v.divide(from, stacked); added != nil {
+				added.session = s
+				v.giveKeyboard(added)
+				return
+			}
+		}
 	}
-	v.paneSeq++
-	p := &pane{key: v.paneSeq, session: s}
-	v.panes = append(v.panes, p)
-	v.giveKeyboard(p)
 }
 
 // newSession starts a login shell in a Pane that shows none, or whose
@@ -332,14 +341,11 @@ func (v *sandboxView) drop(s *session) {
 }
 
 // closePane takes a Pane away, where it is not the last: its session
-// loses it.
+// loses it, and the part it shared its room with takes all of it.
 func (v *sandboxView) closePane(p *pane) {
-	at := slices.Index(v.panes, p)
-	if at < 0 || len(v.panes) <= 1 {
-		return
+	if v.remove(p) {
+		v.lose(p.session)
 	}
-	v.panes = slices.Delete(v.panes, at, at+1)
-	v.lose(p.session)
 }
 
 // closeSessions ends every session of the sandbox and takes its Panes
@@ -348,7 +354,7 @@ func (v *sandboxView) closeSessions() {
 	for _, s := range v.sessions {
 		s.term.Close()
 	}
-	v.sessions, v.panes = nil, nil
+	v.sessions, v.panes, v.root, v.keyboard = nil, nil, nil, nil
 	v.lived++
 }
 
@@ -375,35 +381,26 @@ func (v *sandboxView) agentSessions() []*session {
 	return out
 }
 
-// panesView is the Panes of a running sandbox: one fills the page, two
-// stand side by side, and from three on they stand in two rows, whose
-// dividers are one line.
+// panesView is the Panes of a running sandbox: one fills the page, and
+// each one that was divided shares its room with the Pane it was divided
+// for, either side of a divider of their own.
 func (v *sandboxView) panesView(c *ui.Context) {
+	if v.root == nil {
+		v.note(c, paneOpening)
+		return
+	}
+	// The Pane the keyboard is in, as the last frame left it: it keeps the
+	// keyboard when the Panes are arranged anew.
+	v.keyboard = nil
+	for _, p := range v.panes {
+		if p.box.FocusWithin(c) {
+			v.keyboard = p
+		}
+	}
 	// What a strip's controls ask is done once every Pane is built: a
 	// Pane that closed would move the ones still to be built.
 	var asked func()
-	one := func(i int) func() {
-		return func() {
-			if ask := v.paneView(c, i); ask != nil {
-				asked = ask
-			}
-		}
-	}
-	row := func(i, j int) func() {
-		return func() { ui.SplitPercent(c, &v.columnShare, one(i), one(j)).SplitReset(50).Fill() }
-	}
-	switch len(v.panes) {
-	case 0:
-		v.note(c, paneOpening)
-	case 1:
-		one(0)()
-	case 2:
-		row(0, 1)()
-	case 3:
-		ui.SplitVerticalPercent(c, &v.rowShare, row(0, 1), one(2)).SplitReset(50).Fill()
-	default:
-		ui.SplitVerticalPercent(c, &v.rowShare, row(0, 1), row(2, 3)).SplitReset(50).Fill()
-	}
+	v.partView(c, v.root, &asked)
 	if asked != nil {
 		asked()
 	}
@@ -418,9 +415,9 @@ func paneName(i int) string { return fmt.Sprintf("Pane %d", i+1) }
 // another. A glyph dragged from the Header is dropped on a Pane, which
 // shows a wash of the accent color while one is over it. It returns
 // what was asked of it, to be done once the Panes are built, or nil.
-func (v *sandboxView) paneView(c *ui.Context, i int) func() {
+func (v *sandboxView) paneView(c *ui.Context, p *pane) func() {
 	t := c.Theme()
-	p := v.panes[i]
+	i := slices.Index(v.panes, p)
 	name := paneName(i)
 	n := fmt.Sprint(i + 1)
 	// Its label says which sandbox it is of, for whoever does not see
@@ -429,20 +426,26 @@ func (v *sandboxView) paneView(c *ui.Context, i int) func() {
 	if cfg := v.d.config(v.id); cfg != nil {
 		of = name + " of " + cfg.Name
 	}
-	var closing, opening, hiding bool
-	container := ui.Column(c).Key(fmt.Sprintf("pane-%d", p.key)).Fill().Label(of)
+	var closing, opening, hiding, beside, below bool
+	container := ui.Column(c).Key(fmt.Sprintf("pane-%d", p.key)).Fill().Label(of).Bind(&p.box)
 	_, over := ui.DragOver[*session](container)
 	dropped, took := ui.Drop[*session](container)
 	container.Children(func() {
 		ui.Row(c).Shrink(0).FillWidth().Height(stripHeight).Gap(t.Space(0.5)).Padding(0, t.Space(1.5), 0, t.Space(3)).AlignItems(ui.Center).
 			Font(chromeFont).Background(panelTheme.Background).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-			ui.Text(c, name).MaxLines(1).TextColor(t.TextMuted).Shrink(0)
+			// The strip's words give way where its Pane is narrow: they are
+			// cut on their one line, and its controls keep their size.
+			ui.Text(c, name).MaxLines(1).TextColor(t.TextMuted).Shrink(1).MinWidth(0)
 			// The agent that runs in the Pane's session, in the app's own
 			// words: its name as the app knows it.
 			if s := p.session; s != nil && s.agent != "" {
-				ui.Text(c, agentTitle(s.agent)).MaxLines(1).Shrink(1).Margin(0, 0, 0, t.Space(2))
+				ui.Text(c, agentTitle(s.agent)).MaxLines(1).Shrink(1).MinWidth(0).Margin(0, 0, 0, t.Space(2))
 			}
 			ui.Spacer(c)
+			// Another Pane, in half of this one's room: beside it, or below
+			// it. One that there is no room for is dimmed, and says why.
+			beside = dimmable(c, "add-beside-"+n, glyphAddPaneBeside, addPaneBesideLabel+" "+name, addPaneBesideLabel, v.cannotDivide(p, false)).Clicked()
+			below = dimmable(c, "add-below-"+n, glyphAddPaneBelow, addPaneBelowLabel+" "+name, addPaneBelowLabel, v.cannotDivide(p, true)).Clicked()
 			if (p.session == nil && !p.opening) || (p.session != nil && p.session.over) {
 				opening = glyphButtonIn(c, "new-session-"+n, glyphAdd, newSessionLabel+" in "+name, newSessionLabel, t.Text).Clicked()
 			}
@@ -484,6 +487,10 @@ func (v *sandboxView) paneView(c *ui.Context, i int) func() {
 		return func() { v.hide(p) }
 	case opening:
 		return func() { v.newSession(p) }
+	case beside:
+		return func() { v.addPane(p, false) }
+	case below:
+		return func() { v.addPane(p, true) }
 	}
 	return nil
 }

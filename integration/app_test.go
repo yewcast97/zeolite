@@ -323,8 +323,9 @@ func TestBuiltApp(t *testing.T) {
 		t.Fatalf("writing into the Home: %s", out)
 	}
 
-	// Add Pane, in the Header, opens another login shell beside the first.
-	a.act("add-pane", "press", "")
+	// Add Pane Beside, on the first Pane's strip, opens another login
+	// shell beside it.
+	a.act("add-beside-1", "press", "")
 	a.waitNode("the second Pane", 30*time.Second, labelled("Pane 2 of Research"))
 	a.call("idle", map[string]any{"timeout": 3000})
 	a.capture("app-6-two-panes.png")
@@ -407,8 +408,9 @@ func agentAtWorkInTheBuiltApp(t *testing.T, a *automation, sandboxID, key string
 		t.Fatalf("writing opencode's config: %s", out)
 	}
 	// A Pane opened now has a shell that read the key: the agent is
-	// started there, by its name.
-	a.act("add-pane", "press", "")
+	// started there, by its name. It stands under the second, half the
+	// page wide: an agent's screen needs the columns.
+	a.act("add-below-2", "press", "")
 	pane := a.waitNode("the third Pane", 30*time.Second, labelled("Pane 3 of Research"))
 	time.Sleep(time.Second) // the shell prints its prompt
 	a.click(pane)

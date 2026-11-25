@@ -122,17 +122,28 @@ var (
 		".....#..",
 		"........",
 	}
-	// glyphAddPane is a page cut in four, with a plus where its last
-	// part would be: Add Pane.
-	glyphAddPane = glyph{
-		"###.###.",
-		"#.#.#.#.",
-		"###.###.",
-		"........",
-		"###..#..",
-		"#.#.###.",
-		"###..#..",
-		"........",
+	// glyphAddPaneBeside is a Pane divided left and right, and
+	// glyphAddPaneBelow one divided above and below: Add Pane Beside and
+	// Add Pane Below.
+	glyphAddPaneBeside = glyph{
+		"########",
+		"#..##..#",
+		"#..##..#",
+		"#..##..#",
+		"#..##..#",
+		"#..##..#",
+		"#..##..#",
+		"########",
+	}
+	glyphAddPaneBelow = glyph{
+		"########",
+		"#......#",
+		"#......#",
+		"########",
+		"########",
+		"#......#",
+		"#......#",
+		"########",
 	}
 	// glyphHide is an arrow up to a line: a session that goes behind its
 	// glyph in the Header.

@@ -477,20 +477,25 @@ func (h *harness) click(label string) {
 }
 
 // rules checks what holds of every sandbox's Panes and sessions at any
-// moment: a sandbox that runs has one Pane to four, and one that does
-// not has none, nor a session; a session is shown in one Pane at most,
-// and one that is in none is an Agent Session.
+// moment: a sandbox that runs has one Pane to sixteen, four at most side
+// by side and four one over another, listed in the order they stand, and
+// one that does not run has none, nor a session; a session is shown in
+// one Pane at most, and one that is in none is an Agent Session.
 func (h *harness) rules() {
 	h.t.Helper()
 	for id, v := range h.d.views {
 		if !running(v.status.State) {
-			if len(v.panes) != 0 || len(v.sessions) != 0 {
+			if len(v.panes) != 0 || len(v.sessions) != 0 || v.root != nil {
 				h.t.Fatalf("%s does not run and has %d Panes and %d sessions", id, len(v.panes), len(v.sessions))
 			}
 			continue
 		}
-		if len(v.panes) < 1 || len(v.panes) > maxPanes {
-			h.t.Fatalf("%s runs with %d Panes, want one to %d", id, len(v.panes), maxPanes)
+		across, down := v.root.extent(nil, false)
+		if len(v.panes) < 1 || across > maxPanesAcross || down > maxPanesDown || len(v.panes) > maxPanesAcross*maxPanesDown {
+			h.t.Fatalf("%s runs with %d Panes, %d side by side and %d one over another, want one to %d, %d and %d at most", id, len(v.panes), across, down, maxPanesAcross*maxPanesDown, maxPanesAcross, maxPanesDown)
+		}
+		if !slices.Equal(v.panes, v.root.panes(nil)) {
+			h.t.Fatalf("the Panes of %s are not listed in the order they stand", id)
 		}
 		shown := map[*session]int{}
 		for _, p := range v.panes {
@@ -508,6 +513,76 @@ func (h *harness) rules() {
 			if shown[s] == 0 && s.agent == "" {
 				h.t.Fatalf("a session of %s is Hidden, and is no Agent Session", id)
 			}
+		}
+	}
+}
+
+// beside and below are what the controls that add a Pane are labelled
+// on the strip of the Pane at a place, the first at 0.
+func beside(pane int) string { return addPaneBesideLabel + " " + paneName(pane) }
+func below(pane int) string  { return addPaneBelowLabel + " " + paneName(pane) }
+
+// besideLast is the label of Add Pane Beside on the last Pane of the
+// sandbox shown: the Pane it adds is the last in its turn.
+func (h *harness) besideLast() string {
+	h.t.Helper()
+	v := h.d.views[h.d.selected]
+	if v == nil || len(v.panes) == 0 {
+		h.t.Fatalf("the page shows no Pane to add one beside")
+	}
+	return beside(len(v.panes) - 1)
+}
+
+// rooms is the part of the page's width and of its height that each
+// Pane of a part has, the part having this much of each.
+func rooms(t *part, width, height float32, into map[*pane][2]float32) {
+	if t.pane != nil {
+		into[t.pane] = [2]float32{width, height}
+		return
+	}
+	share := t.share / 100
+	if t.stacked {
+		rooms(t.first, width, height*share, into)
+		rooms(t.second, width, height*(1-share), into)
+		return
+	}
+	rooms(t.first, width*share, height, into)
+	rooms(t.second, width*(1-share), height, into)
+}
+
+// fill adds Panes to the sandbox shown until it has sixteen, four by
+// four, each with its shell: the widest Pane that can be divided beside
+// is, until none can, and then the highest that can be divided below. A
+// page of one Pane is filled with sixteen of one size.
+func (h *harness) fill() {
+	h.t.Helper()
+	v := h.d.views[h.d.selected]
+	for _, stacked := range []bool{false, true} {
+		for {
+			room := map[*pane][2]float32{}
+			rooms(v.root, 1, 1, room)
+			at, most := -1, float32(0)
+			for i, p := range v.panes {
+				size := room[p][0]
+				if stacked {
+					size = room[p][1]
+				}
+				if v.cannotDivide(p, stacked) == "" && size > most {
+					at, most = i, size
+				}
+			}
+			if at < 0 {
+				break
+			}
+			label := beside(at)
+			if stacked {
+				label = below(at)
+			}
+			n := len(v.panes)
+			h.click(label)
+			h.settle("another Pane's shell", func() bool {
+				return len(v.panes) == n+1 && !slices.ContainsFunc(v.panes, func(p *pane) bool { return p.opening })
+			})
 		}
 	}
 }
@@ -1174,7 +1249,7 @@ func TestMCPCallsAreListed(t *testing.T) {
 		t.Fatalf("after the first MCP call the control is at %+v and the window shows %q", at, h.tt.Texts())
 	}
 	h.click(mcpCallsLabel)
-	if !h.tt.HasText(`tools/call {"name":"navigate"}`) || !h.tt.HasText("browser") || h.tt.HasText("Terminal") || h.tt.HasText(addPaneLabel) {
+	if !h.tt.HasText(`tools/call {"name":"navigate"}`) || !h.tt.HasText("browser") || h.tt.HasText("Terminal") || h.tt.HasText(addPaneBesideLabel) {
 		t.Errorf("the list shows %q", h.tt.Texts())
 	}
 	// The session behind the list goes on, and is not looked at: what it
@@ -1346,7 +1421,7 @@ func TestHeaderMakesRoomForTheWindowsControls(t *testing.T) {
 	}
 	// The Header is at the top, as high as it says, and the page starts
 	// under it.
-	for _, control := range []string{addPaneLabel, "Stop", "Setup", "Clone", "Destroy"} {
+	for _, control := range []string{"Stop", "Setup", "Clone", "Destroy"} {
 		if at, ok := h.tt.Find(control); !ok || at.Y < 0 || at.Y+at.H > headerHeight {
 			t.Errorf("%s is at %+v, not in a Header of %v", control, at, float32(headerHeight))
 		}
@@ -2452,10 +2527,13 @@ func (h *harness) terminalAt(pane int) {
 }
 
 // A running sandbox's page is Panes of login shells: one at its start,
-// and up to four, in two rows whose dividers are one line. Add Pane, in
-// the Header, opens another; a Pane's strip closes it, and its shell
-// with it; a shell that ends by itself leaves its Pane, which says so
-// and offers another.
+// and others added from a Pane's own strip, where Add Pane Beside and
+// Add Pane Below give half that Pane's room to a new one: four side by
+// side and four one over another at most, and a control that can add
+// none is dimmed and says why. A Pane's strip closes it, and its shell
+// with it, and the Pane it shared its room with takes all of it; a
+// shell that ends by itself leaves its Pane, which says so and offers
+// another.
 func TestPanes(t *testing.T) {
 	h := newHarness(t, []sandbox.Config{gated("s1", "Research")})
 	h.tt.SetSize(1280, 900)
@@ -2476,26 +2554,45 @@ func TestPanes(t *testing.T) {
 		h.tt.Type(text)
 		h.settle("what was typed to reach "+paneName(pane), func() bool { now, _ := conn.state(); return now == before+text })
 	}
-	add := func(want int) {
+	// add clicks a control that adds a Pane, and returns the shell of the
+	// Pane that came, which stands at a place among the others.
+	add := func(label string, at int) *fakeConn {
 		t.Helper()
-		h.click(addPaneLabel)
-		h.settle("another Pane's shell", func() bool { return len(v.panes) == want && v.panes[want-1].session != nil })
-		if conns := h.backend.opened(); len(conns) < want || conns[len(conns)-1].sandbox != "s1" {
-			t.Fatalf("Add Pane opened %d sessions", len(conns))
+		panes, opened := len(v.panes), len(h.backend.opened())
+		h.click(label)
+		h.settle("another Pane's shell", func() bool {
+			return len(v.panes) == panes+1 && v.panes[at].session != nil && len(h.backend.opened()) == opened+1
+		})
+		conn := h.connOf("s1", at)
+		if conn != h.backend.opened()[opened] || conn.sandbox != "s1" {
+			t.Fatalf("%s did not show the one shell it opened as %s", label, paneName(at))
 		}
+		return conn
 	}
+	near := func(a, b float32) bool { return math.Abs(float64(a-b)) <= 1 }
+	// has is whether the window shows this text, or something labelled
+	// so, and nothing longer.
+	has := func(text string) bool { _, ok := h.tt.Find(text); return ok }
 
 	// One Pane fills the page, and is not to be closed: a running
 	// sandbox has one.
-	if one := box(0); one.X > h.d.sidebarWidth+8 || one.X+one.W < 1279 || one.Y+one.H < 899 || h.tt.HasText("Close Pane 1") {
+	first := h.connOf("s1", 0)
+	if one := box(0); one.X > h.d.sidebarWidth+8 || one.X+one.W < 1279 || one.Y+one.H < 899 || has("Close Pane 1") {
 		t.Fatalf("the first Pane is at %+v: %q", one, h.tt.Texts())
 	}
 	typed(0, "one")
+	// The Header has no control that adds a Pane: each Pane's strip has.
+	for _, label := range []string{beside(0), below(0)} {
+		if at, ok := h.tt.Find(label); !ok || at.Y < headerHeight || at.Y+at.H > headerHeight+stripHeight+2 {
+			t.Fatalf("%s is at %+v, not in the strip of Pane 1: %q", label, at, h.tt.Texts())
+		}
+	}
 
-	// A second stands beside it, and has the keyboard as it comes.
-	add(2)
+	// Add Pane Beside halves it: the new Pane stands right of it, as
+	// high, and has the keyboard as it comes.
+	second := add(beside(0), 1)
 	one, two := box(0), box(1)
-	if two.X < one.X+one.W || two.Y != one.Y || two.H != one.H || two.X+two.W < 1279 || !h.tt.HasText("Close Pane 1") || !h.tt.HasText("Close Pane 2") {
+	if two.X < one.X+one.W || two.Y != one.Y || two.H != one.H || !near(one.W, two.W) || two.X+two.W < 1279 || !has("Close Pane 1") || !has("Close Pane 2") {
 		t.Fatalf("with two Panes, the first is at %+v and the second at %+v: %q", one, two, h.tt.Texts())
 	}
 	typed(1, "two")
@@ -2503,30 +2600,54 @@ func TestPanes(t *testing.T) {
 	h.terminalAt(0)
 	typed(0, "-again")
 
-	// The third stands under them, as wide as the page; the fourth
-	// beside it, under the second, their dividers one line. At four there
-	// is no room for another.
-	add(3)
-	one, two, three := box(0), box(1), box(2)
-	if three.Y < one.Y+one.H || three.X != one.X || three.X+three.W != two.X+two.W || three.Y+three.H < 899 {
-		t.Fatalf("with three Panes they are at %+v, %+v and %+v", one, two, three)
+	// Add Pane Below halves the first again: the new Pane stands under
+	// it, as wide, and is Pane 2 by where it stands; the Pane beside
+	// them, Pane 3 now, is as it was.
+	third := add(below(0), 1)
+	one, under, right := box(0), box(1), box(2)
+	if under.Y < one.Y+one.H || under.X != one.X || under.W != one.W || !near(one.H, under.H) || under.Y+under.H < 899 || right != two {
+		t.Fatalf("with Pane 1 divided below, the Panes are at %+v, %+v and %+v; the Pane beside was at %+v", one, under, right, two)
 	}
-	add(4)
-	one, two, three, four := box(0), box(1), box(2), box(3)
-	if four.Y != three.Y || four.X != two.X || three.W != one.W || four.W != two.W || h.tt.HasText(addPaneLabel) {
-		t.Fatalf("with four Panes they are at %+v, %+v, %+v and %+v: %q", one, two, three, four, h.tt.Texts())
+	if h.connOf("s1", 0) != first || h.connOf("s1", 2) != second {
+		t.Fatalf("after Add Pane Below the Panes show other sessions than they did")
+	}
+	typed(1, "three")
+	// And the Pane beside them is halved by itself.
+	fourth := add(beside(2), 3)
+	if three, four := box(2), box(3); four.X < three.X+three.W || four.Y != three.Y || four.H != right.H || !near(three.W, four.W) || three.X != right.X || box(0) != one || box(1) != under {
+		t.Fatalf("with Pane 3 divided beside, the Panes are at %+v, %+v, %+v and %+v", box(0), box(1), three, four)
 	}
 	typed(3, "four")
 
-	// A Pane's strip closes it: its shell is hung up, the Panes after it
-	// move up, and the others keep theirs.
-	second, third, fourth := h.connOf("s1", 1), h.connOf("s1", 2), h.connOf("s1", 3)
+	// Each divider is dragged by itself: the one between Pane 1 and
+	// Pane 2 moves them and nothing else, and a double click puts it
+	// back in the middle.
+	three, four := box(2), box(3)
+	lineX, lineY := one.X+one.W/2, one.Y+one.H
+	h.dragDivider(lineX, lineY, lineX, lineY+120, func() {})
+	if lower := box(0); !near(lower.H, one.H+120) || !near(box(1).H, under.H-120) || box(2) != three || box(3) != four {
+		t.Fatalf("after the divider under Pane 1 was dragged down by 120 the Panes are at %+v, %+v, %+v and %+v", lower, box(1), box(2), box(3))
+	}
+	h.tt.ClickAt(lineX, lineY+120)
+	h.tt.ClickAt(lineX, lineY+120)
+	h.tt.Frame()
+	h.tt.Frame()
+	if box(0) != one || box(1) != under {
+		t.Errorf("after a double click on their divider Pane 1 and Pane 2 are at %+v and %+v, want %+v and %+v", box(0), box(1), one, under)
+	}
+
+	// A Pane's strip closes it: its shell is hung up, the Pane it shared
+	// its room with takes all of it, the Panes after it are named anew,
+	// and the others keep their sessions.
 	h.click("Close Pane 2")
-	h.settle("the Pane to close", func() bool { _, closed := second.state(); return closed && len(v.panes) == 3 })
-	if h.connOf("s1", 1) != third || h.connOf("s1", 2) != fourth || len(v.sessions) != 3 || !h.tt.HasText(addPaneLabel) {
+	h.settle("the Pane to close", func() bool { _, closed := third.state(); return closed && len(v.panes) == 3 })
+	if h.connOf("s1", 0) != first || h.connOf("s1", 1) != second || h.connOf("s1", 2) != fourth || len(v.sessions) != 3 {
 		t.Fatalf("after Pane 2 closed the Panes show other sessions than the three that were left: %q", h.tt.Texts())
 	}
-	for i, conn := range []*fakeConn{h.connOf("s1", 0), third, fourth} {
+	if whole := box(0); whole.X != one.X || whole.W != one.W || whole.Y != one.Y || whole.Y+whole.H < 899 || box(1) != three || box(2) != four {
+		t.Fatalf("after the Pane under it closed, Pane 1 is at %+v and the others at %+v and %+v", whole, box(1), box(2))
+	}
+	for i, conn := range []*fakeConn{first, second, fourth} {
 		if _, closed := conn.state(); closed {
 			t.Errorf("closing Pane 2 closed the session of what is now Pane %d", i+1)
 		}
@@ -2538,9 +2659,9 @@ func TestPanes(t *testing.T) {
 
 	// A shell that ends by itself leaves its Pane, which says so and
 	// offers another: none is started unasked.
-	third.shell.Close()
+	second.shell.Close()
 	h.settle("the Pane to say that its shell ended", func() bool { return v.panes[1].session == nil && h.tt.HasText(paneEnded) })
-	if len(v.panes) != 3 || len(v.sessions) != 2 || !h.tt.HasText("New Session in Pane 2") || h.tt.HasText("New Session in Pane 1") {
+	if len(v.panes) != 3 || len(v.sessions) != 2 || !has("New Session in Pane 2") || has("New Session in Pane 1") {
 		t.Fatalf("after a shell ended the window shows %q", h.tt.Texts())
 	}
 	opened := len(h.backend.opened())
@@ -2552,7 +2673,7 @@ func TestPanes(t *testing.T) {
 	}
 	h.click("New Session in Pane 2")
 	h.settle("the Pane's new shell", func() bool { return v.panes[1].session != nil && len(h.backend.opened()) == opened+1 })
-	if h.tt.HasText(paneEnded) || h.tt.HasText("New Session in Pane 2") {
+	if h.tt.HasText(paneEnded) || has("New Session in Pane 2") {
 		t.Errorf("with its new shell the Pane still says %q", h.tt.Texts())
 	}
 	typed(1, "anew")
@@ -2562,7 +2683,7 @@ func TestPanes(t *testing.T) {
 	h.backend.mu.Lock()
 	h.backend.openErr = errors.New("the sandbox is not running")
 	h.backend.mu.Unlock()
-	h.click(addPaneLabel)
+	h.click(beside(2))
 	h.settle("the Pane to say why it has no shell", func() bool { return len(v.panes) == 4 && h.tt.HasText("the sandbox is not running") })
 	h.backend.mu.Lock()
 	h.backend.openErr = nil
@@ -2570,20 +2691,73 @@ func TestPanes(t *testing.T) {
 	h.click("New Session in Pane 4")
 	h.settle("the Pane's shell", func() bool { return v.panes[3].session != nil && !h.tt.HasText("the sandbox is not running") })
 
+	// Four Panes stand side by side now, and no fifth: Add Pane Beside is
+	// dimmed on each, says why to whoever rests the pointer on it, and
+	// does nothing. Add Pane Below still adds.
+	for i := range 4 {
+		if why := v.cannotDivide(v.panes[i], false); why != fullAcross {
+			t.Fatalf("with four Panes side by side, %s says %q", beside(i), why)
+		}
+		at, ok := h.tt.Find(beside(i))
+		if !ok {
+			t.Fatalf("with four Panes side by side there is no %s: %q", beside(i), h.tt.Texts())
+		}
+		h.tt.ClickAt(at.X+at.W/2, at.Y+at.H/2)
+		h.settle("a frame", func() bool { return true })
+	}
+	if len(v.panes) != 4 || len(h.backend.opened()) != opened+2 {
+		t.Fatalf("a dimmed Add Pane Beside made a Pane: there are %d, of %d shells", len(v.panes), len(h.backend.opened()))
+	}
+	if told := strings.Split(h.told(beside(1)), "|"); !slices.Contains(told, fullAcross) || slices.Contains(told, addPaneBesideLabel) {
+		t.Errorf("a dimmed Add Pane Beside says %q", told)
+	}
+	if told := strings.Split(h.told(below(1)), "|"); !slices.Contains(told, addPaneBelowLabel) || slices.Contains(told, fullDown) {
+		t.Errorf("Add Pane Below, which can add a Pane, says %q", told)
+	}
+	h.park()
+
+	// Sixteen at most, four by four: then every control that adds a Pane
+	// is dimmed, and a click on any adds none.
+	h.fill()
+	if across, down := v.root.extent(nil, false); len(v.panes) != 16 || across != 4 || down != 4 {
+		t.Fatalf("filled, the page has %d Panes, %d side by side and %d one over another", len(v.panes), across, down)
+	}
+	shells := len(h.backend.opened())
+	for i := range 16 {
+		for _, label := range []string{beside(i), below(i)} {
+			at, ok := h.tt.Find(label)
+			if !ok {
+				t.Fatalf("with sixteen Panes there is no %s", label)
+			}
+			h.tt.ClickAt(at.X+at.W/2, at.Y+at.H/2)
+			h.settle("a frame", func() bool { return true })
+		}
+	}
+	if len(v.panes) != 16 || len(h.backend.opened()) != shells || v.roomForPane() {
+		t.Fatalf("with sixteen Panes a click made another: there are %d, of %d shells", len(v.panes), len(h.backend.opened()))
+	}
+	if told := h.told(below(5)); !strings.Contains(told, fullDown) {
+		t.Errorf("with four Panes one over another, Add Pane Below says %s", told)
+	}
+	h.park()
+
 	// Down to one Pane, which stays.
 	for len(v.panes) > 1 {
 		n := len(v.panes)
 		h.click("Close Pane " + strconv.Itoa(n))
 		h.settle("the Pane to close", func() bool { return len(v.panes) == n-1 })
 	}
-	if h.tt.HasText("Close Pane 1") || len(v.sessions) != 1 {
+	if has("Close Pane 1") || len(v.sessions) != 1 {
 		t.Errorf("with one Pane left the window shows %q, and the sandbox holds %d sessions", h.tt.Texts(), len(v.sessions))
+	}
+	if only := box(0); only.X > h.d.sidebarWidth+8 || only.X+only.W < 1279 || only.Y+only.H < 899 {
+		t.Errorf("the one Pane left is at %+v, not all of the page", only)
 	}
 
 	// A sandbox that stops takes its Panes with it, and starts with one
 	// again.
 	last := h.connOf("s1", 0)
-	h.click(addPaneLabel)
+	h.click(beside(0))
 	h.settle("a second Pane", func() bool { return len(v.panes) == 2 && v.panes[1].session != nil })
 	h.d.Apply(sandbox.Update{SandboxID: "s1", Status: &sandbox.Status{State: sandbox.StateStopped}})
 	h.settle("the sessions to close", func() bool { _, closed := last.state(); return closed && len(v.panes) == 0 })
@@ -2625,7 +2799,7 @@ func TestAShellThatComesTooLateIsHungUp(t *testing.T) {
 
 	// A Pane that is closed while its shell is being started.
 	h.runs("s1")
-	h.click(addPaneLabel)
+	h.click(h.besideLast())
 	if len(v.panes) != 2 || !v.panes[1].opening {
 		t.Fatalf("after Add Pane the sandbox has %d Panes", len(v.panes))
 	}
@@ -2790,7 +2964,7 @@ func TestAgentSessionsHaveGlyphsInTheHeader(t *testing.T) {
 
 	// A second agent, in a second Pane. Dropped on its Pane, the first,
 	// Hidden again, takes it, and the second is Hidden in its turn.
-	h.click(addPaneLabel)
+	h.click(h.besideLast())
 	h.settle("a second Pane's shell", func() bool { return len(v.panes) == 2 && v.panes[1].session != nil })
 	other := h.connOf("s1", 1)
 	h.agentIn("s1", "claude", "codex")
@@ -2816,21 +2990,37 @@ func TestAgentSessionsHaveGlyphsInTheHeader(t *testing.T) {
 	}
 	glyph("Codex, hidden")
 
-	// With four Panes there is no room for a Hidden session to show
-	// itself: its glyph says to drag it, and a click does nothing.
-	for len(v.panes) < maxPanes {
+	// With four Panes side by side, a Hidden session takes half of the
+	// last one's room, under it.
+	for len(v.panes) < maxPanesAcross {
 		n := len(v.panes)
-		h.click(addPaneLabel)
+		h.click(h.besideLast())
 		h.settle("another Pane's shell", func() bool { return len(v.panes) == n+1 && v.panes[n].session != nil })
 	}
+	codex := v.sessions[slices.IndexFunc(v.sessions, func(s *session) bool { return s.agent == "codex" })]
+	shells := len(h.backend.opened())
+	h.click("Codex, hidden")
+	h.settle("the session's Pane", func() bool { return len(v.panes) == maxPanesAcross+1 && v.panes[maxPanesAcross].session == codex })
+	above, ok := h.tt.Find(paneName(maxPanesAcross-1) + " of Research")
+	came, ok2 := h.tt.Find(paneName(maxPanesAcross) + " of Research")
+	if !ok || !ok2 || came.X != above.X || came.W != above.W || came.Y < above.Y+above.H || len(h.backend.opened()) != shells {
+		t.Fatalf("with four Panes side by side, a Hidden session came to %+v, not under the last Pane at %+v; %d shells were opened for it", came, above, len(h.backend.opened())-shells)
+	}
+	glyph("Codex, in " + paneName(maxPanesAcross))
+	h.click("Hide the session of " + paneName(maxPanesAcross))
+	h.settle("the Pane's own shell", func() bool { s := v.panes[maxPanesAcross].session; return s != nil && s != codex })
+
+	// With sixteen Panes there is no room for a Hidden session to show
+	// itself: its glyph says to drag it, and a click does nothing.
+	h.fill()
 	if told := h.told("Codex, hidden"); !strings.Contains(told, "Codex · hidden: drag it onto a Pane to show it there") {
-		t.Errorf("with four Panes the hidden glyph says %s", told)
+		t.Errorf("with sixteen Panes the hidden glyph says %s", told)
 	}
 	h.park()
 	h.click("Codex, hidden")
 	h.settle("a frame", func() bool { return true })
-	if len(v.panes) != maxPanes {
-		t.Fatalf("a click on a hidden glyph made a fifth Pane")
+	if len(v.panes) != maxPanesAcross*maxPanesDown || v.paneOf(codex) != nil {
+		t.Fatalf("a click on a hidden glyph made a seventeenth Pane")
 	}
 	glyph("Codex, hidden")
 
@@ -3089,7 +3279,7 @@ func TestASessionThatRingsMarksItsSandbox(t *testing.T) {
 	}
 
 	// A session in any Pane that is shown is in sight.
-	h.click(addPaneLabel)
+	h.click(h.besideLast())
 	h.settle("a second Pane", func() bool { return len(v.panes) == 2 && v.panes[1].session != nil })
 	say("\a")
 	if why := h.needs("s1"); why != "" || h.marks() != 0 {
@@ -3176,7 +3366,7 @@ func TestASessionThatEndsMarksItsSandbox(t *testing.T) {
 			h.click("Close Pane " + strconv.Itoa(n))
 			h.settle("the Pane to close", func() bool { return len(v.panes) == n-1 })
 		}
-		h.click(addPaneLabel)
+		h.click(h.besideLast())
 		h.settle("a second Pane's shell", func() bool { return len(v.panes) == 2 && v.panes[1].session != nil })
 		return h.connOf("s1", 1)
 	}
@@ -3650,9 +3840,10 @@ func TestCardsKeepTheSidebarsKeys(t *testing.T) {
 	}
 }
 
-// At its smallest the window still holds everything: the Cards, the
-// Header with its controls, the viewport, and four Panes, each
-// with its strip and a terminal that has room.
+// At the window's smallest size everything still has its place inside
+// the window: the Header's controls, the viewport over the Panes, and
+// sixteen Panes, four by four, each with its strip's controls and a
+// terminal with room to work in.
 func TestTheWindowAtItsSmallest(t *testing.T) {
 	const width, height = 900, 600
 	browser := browserPack(t)
@@ -3668,7 +3859,7 @@ func TestTheWindowAtItsSmallest(t *testing.T) {
 	// The control of the MCP calls takes its place in the Header.
 	h.tt.Frame()
 	for n := 2; n <= 3; n++ {
-		h.click(addPaneLabel)
+		h.click(h.besideLast())
 		h.settle("another Pane's shell", func() bool { return len(v.panes) == n && v.panes[n-1].session != nil })
 	}
 
@@ -3683,32 +3874,51 @@ func TestTheWindowAtItsSmallest(t *testing.T) {
 		}
 		return box
 	}
-	// With three Panes, the Header holds every control it has.
+	// With three Panes, the Header holds every control it has, and the
+	// viewport stands over the Panes.
 	for _, what := range []string{
 		attentionLabel, "GATE LOCKED [Exit Address Mismatch]", "GATE OPEN [203.0.113.7]", "New Sandbox",
-		"A sandbox with quite a long name", addPaneLabel, mcpCallsLabel, "Stop", "Setup", "Clone", "Destroy",
+		"A sandbox with quite a long name", mcpCallsLabel, "Stop", "Setup", "Clone", "Destroy",
 		browserWaits,
 	} {
 		inside(what)
 	}
-	h.click(addPaneLabel)
-	h.settle("the fourth Pane's shell", func() bool { return len(v.panes) == 4 && v.panes[3].session != nil })
-	for i := range 4 {
-		n := strconv.Itoa(i + 1)
-		inside("Pane " + n)
-		inside("Close Pane " + n)
-		inside("Pane " + n + " of A sandbox with quite a long name")
+	if over, one := inside(browserWaits), inside("Pane 1"); over.Y >= one.Y {
+		t.Errorf("the viewport is at %+v and Pane 1 at %+v", over, one)
 	}
-	// Each of the four sessions has a terminal with room to work in.
+
+	// Sixteen Panes, in a sandbox whose page is its Panes alone: every
+	// one is inside the window with all of its strip's controls, none of
+	// which gave way to the Pane's name, and has a terminal with room to
+	// work in.
+	h.click("Scraper")
+	v = h.d.view("s2")
+	h.settle("the sandbox's first Pane", func() bool { return len(v.panes) == 1 && v.panes[0].session != nil })
+	h.fill()
+	if len(v.panes) != 16 {
+		t.Fatalf("filled, the page has %d Panes", len(v.panes))
+	}
+	lead := inside("Pane 1 of Scraper")
 	for i, p := range v.panes {
-		if cols, rows := p.session.term.Size(); cols < 20 || rows < 3 {
-			t.Errorf("at %dx%d the terminal of Pane %d is %d columns by %d rows", width, height, i+1, cols, rows)
+		name := paneName(i)
+		at := inside(name + " of Scraper")
+		if math.Abs(float64(at.W-lead.W)) > 1 || math.Abs(float64(at.H-lead.H)) > 1 {
+			t.Errorf("at %dx%d %s is at %+v and Pane 1 at %+v, want sixteen of one size", width, height, name, at, lead)
 		}
-	}
-	// The viewport stands over the Panes, which are two rows of two.
-	over, one, two, three, four := inside(browserWaits), inside("Pane 1"), inside("Pane 2"), inside("Pane 3"), inside("Pane 4")
-	if over.Y >= one.Y || two.X <= one.X || two.Y != one.Y || three.Y <= one.Y || three.X != one.X || four.X != two.X || four.Y != three.Y {
-		t.Errorf("the viewport is at %+v and the Panes at %+v, %+v, %+v and %+v", over, one, two, three, four)
+		// The four of a row stand side by side, and the rows one under
+		// another: a Pane is named by where it stands in its column.
+		for _, control := range []string{beside(i), below(i), "Close " + name} {
+			box := inside(control)
+			if box.W != glyphButtonSize || box.H != glyphButtonSize || box.X < at.X || box.X+box.W > at.X+at.W || box.Y < at.Y || box.Y+box.H > at.Y+stripHeight {
+				t.Errorf("at %dx%d %q is at %+v, not whole in the strip of its Pane at %+v", width, height, control, box, at)
+			}
+		}
+		if p.session == nil {
+			t.Fatalf("%s shows no session", name)
+		}
+		if cols, rows := p.session.term.Size(); cols < 20 || rows < 3 {
+			t.Errorf("at %dx%d the terminal of %s is %d columns by %d rows", width, height, name, cols, rows)
+		}
 	}
 }
 
