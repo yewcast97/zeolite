@@ -78,13 +78,51 @@ func windowOptions(content mygo.Content) mygo.WindowOptions {
 
 // menu is the app's menu bar: the app's own menu, Edit and Window. There
 // is no File menu: its Close Window takes Cmd+W, and closing the window
-// quits the app, which stops every sandbox.
+// puts every terminal out of sight while the sandboxes run on.
 func menu() []*mygo.MenuItem {
 	return []*mygo.MenuItem{
 		{Role: mygo.RoleAppMenu},
 		{Role: mygo.RoleEditMenu},
 		{Role: mygo.RoleWindowMenu},
 	}
+}
+
+// windowCloser answers a close of the app's one window. The sandboxes run
+// through the app's process: their heartbeats, their Packets, their
+// Carriers and their Links. So a close that is not a quit's hides the
+// window and keeps the app, whose Dock icon brings the window back; a
+// quit closes it, and stops every sandbox.
+type windowCloser struct {
+	// quitting is whether a quit is under way: it closes every window,
+	// and asks each as a click on its close button does.
+	quitting bool
+	// hide puts the window out of sight.
+	hide func()
+}
+
+// closing is asked when the window is about to close: it refuses, and
+// hides the window, unless the app is quitting.
+func (k *windowCloser) closing(e *mygo.CloseEvent) {
+	if k.quitting {
+		return
+	}
+	e.PreventDefault()
+	k.hide()
+}
+
+// hideWindow puts the window out of sight. One in full screen leaves it
+// first: hidden there, it would leave its user before an empty Space.
+func hideWindow(win *mygo.Window) {
+	if !win.IsFullScreen() {
+		win.Hide()
+		return
+	}
+	var off func()
+	off = win.OnLeaveFullScreen(func() {
+		off()
+		win.Hide()
+	})
+	win.SetFullScreen(false)
 }
 
 func main() {
@@ -135,7 +173,17 @@ func main() {
 		}
 		mygo.App.SetMenu(mygo.NewMenu(menu()))
 		win = mygo.NewWindow(windowOptions(ui.View(board.View)))
-		win.OnClosed(func() { mygo.App.Quit() })
+		// Closing the window hides it, and the sandboxes run on: only a
+		// quit closes it. The Dock icon shows it again.
+		closer := &windowCloser{hide: func() { hideWindow(win) }}
+		mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { closer.quitting = true })
+		mygo.App.OnQuitCanceled(func() { closer.quitting = false })
+		win.OnClose(closer.closing)
+		mygo.App.OnActivate(func(hasVisibleWindows bool) {
+			if !hasVisibleWindows {
+				win.Show()
+			}
+		})
 		// Heartbeats must keep their pace while the window is covered or
 		// minimized: macOS would otherwise slow the app's timers, and
 		// every gate would lock for want of them.

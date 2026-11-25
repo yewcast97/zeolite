@@ -24,8 +24,8 @@ func TestWindowHidesItsTitleBar(t *testing.T) {
 	}
 }
 
-// Closing the window quits the app, which stops every sandbox: no menu
-// item gives that a key. The menu bar has no File menu and no Close.
+// Closing the window puts every terminal out of sight: no menu item gives
+// that a key. The menu bar has no File menu and no Close.
 func TestNoMenuItemClosesTheWindow(t *testing.T) {
 	var walk func(items []*mygo.MenuItem)
 	walk = func(items []*mygo.MenuItem) {
@@ -41,5 +41,33 @@ func TestNoMenuItemClosesTheWindow(t *testing.T) {
 	walk(items)
 	if len(items) != 3 || items[0].Role != mygo.RoleAppMenu || items[1].Role != mygo.RoleEditMenu || items[2].Role != mygo.RoleWindowMenu {
 		t.Errorf("the menu bar is not the app's menu, Edit and Window")
+	}
+}
+
+// Closing the window does not quit the app: the close is refused and the
+// window hidden, so that the sandboxes run on. A quit's close goes
+// through, and one whose quit was canceled is refused again.
+func TestClosingTheWindowHidesIt(t *testing.T) {
+	hidden := 0
+	closer := &windowCloser{hide: func() { hidden++ }}
+
+	e := &mygo.CloseEvent{}
+	closer.closing(e)
+	if !e.DefaultPrevented() || hidden != 1 {
+		t.Errorf("a close of the window: refused %v, hidden %d times; want it refused and the window hidden once", e.DefaultPrevented(), hidden)
+	}
+
+	closer.quitting = true
+	e = &mygo.CloseEvent{}
+	closer.closing(e)
+	if e.DefaultPrevented() || hidden != 1 {
+		t.Errorf("a quit's close of the window: refused %v, hidden %d times; want it let through and nothing hidden", e.DefaultPrevented(), hidden-1)
+	}
+
+	closer.quitting = false
+	e = &mygo.CloseEvent{}
+	closer.closing(e)
+	if !e.DefaultPrevented() || hidden != 2 {
+		t.Errorf("a close after a quit that was canceled: refused %v, hidden %d times; want it refused and the window hidden", e.DefaultPrevented(), hidden-1)
 	}
 }
