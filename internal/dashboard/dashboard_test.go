@@ -60,10 +60,14 @@ type fakeBackend struct {
 	streams []*fakeStream
 	// browserTabs are the Browser Tabs the packs' browser lists, and
 	// links the addresses a new one was opened at, in order; tabErr is
-	// what opening one answers.
+	// what opening one answers. listed counts the times the browser was
+	// asked for its Browser Tabs, and behind are the Browser Tabs that
+	// stand behind another, by their IDs.
 	browserTabs []viewport.BrowserTab
 	links       []string
 	tabErr      error
+	listed      int
+	behind      map[string]bool
 	// selected is what the browser's page says is selected in it, and
 	// closeErr what closing a Browser Tab answers.
 	selected string
@@ -219,6 +223,31 @@ func (b *fakeBackend) OpenBrowserTab(sandboxID string, _ pack.Manifest, address 
 	return tab.ID, nil
 }
 
+// BrowserTabs lists the fake browser's Browser Tabs, and counts.
+func (b *fakeBackend) BrowserTabs(string, pack.Manifest) ([]viewport.BrowserTab, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.listed++
+	return append([]viewport.BrowserTab(nil), b.browserTabs...), nil
+}
+
+// timesListed is how often the browser was asked for its Browser Tabs.
+func (b *fakeBackend) timesListed() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.listed
+}
+
+// putBehind says whether a Browser Tab stands behind another.
+func (b *fakeBackend) putBehind(tab string, behind bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.behind == nil {
+		b.behind = map[string]bool{}
+	}
+	b.behind[tab] = behind
+}
+
 // linksOpened are the sandboxes and addresses a Browser Tab was opened
 // at, in order.
 func (b *fakeBackend) linksOpened() []string {
@@ -295,11 +324,11 @@ func (c *fakeConn) state() (typed string, closed bool) {
 	return c.typed.String(), c.closed
 }
 
-// fakeStream gives a frame each time one is asked for, and counts.
+// fakeStream gives a frame each time one is asked for, and counts. A
+// stream whose Browser Tab stands behind another gives none.
 type fakeStream struct {
 	mu     sync.Mutex
 	asked  int
-	listed int
 	inputs []string
 	closed chan struct{}
 	once   sync.Once
@@ -310,13 +339,17 @@ type fakeStream struct {
 
 func (s *fakeStream) Tab() string { return s.tab }
 
-func (s *fakeStream) Tabs(context.Context) ([]viewport.BrowserTab, error) {
-	s.mu.Lock()
-	s.listed++
-	s.mu.Unlock()
+// Behind is whether the fake browser has the stream's Browser Tab
+// behind another, and Front brings it forward.
+func (s *fakeStream) Behind() bool {
 	s.backend.mu.Lock()
 	defer s.backend.mu.Unlock()
-	return append([]viewport.BrowserTab(nil), s.backend.browserTabs...), nil
+	return s.backend.behind[s.tab]
+}
+
+func (s *fakeStream) Front() error {
+	s.backend.putBehind(s.tab, false)
+	return s.record("front")
 }
 
 func (s *fakeStream) Navigate(address string) error { return s.record("navigate " + address) }
@@ -350,16 +383,20 @@ func (s *fakeStream) CloseTab(context.Context) error {
 func (s *fakeStream) Back(context.Context) error    { return s.record("back") }
 func (s *fakeStream) Forward(context.Context) error { return s.record("forward") }
 
-func (s *fakeStream) timesListed() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.listed
-}
-
 func (s *fakeStream) Next(ctx context.Context) (viewport.Frame, error) {
 	s.mu.Lock()
 	s.asked++
 	s.mu.Unlock()
+	// A Browser Tab behind another draws nothing: its stream waits.
+	for s.Behind() {
+		select {
+		case <-s.closed:
+			return viewport.Frame{}, errors.New("closed")
+		case <-ctx.Done():
+			return viewport.Frame{}, ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
+	}
 	select {
 	case <-s.closed:
 		return viewport.Frame{}, errors.New("closed")
@@ -425,6 +462,9 @@ type harness struct {
 	d       *Dashboard
 	tt      *ui.Tester
 	queue   chan func()
+	// minimums are the sizes the window was told to be no smaller than,
+	// in order.
+	minimums [][2]int
 }
 
 func newHarness(t *testing.T, configs []sandbox.Config, packs ...pack.Manifest) *harness {
@@ -434,7 +474,9 @@ func newHarness(t *testing.T, configs []sandbox.Config, packs ...pack.Manifest) 
 	}, queue: make(chan func(), 256)}
 	// What goroutines send to the main thread waits here until the test,
 	// which is the main thread, takes it.
-	h.d = New(h.backend, configs, func(fn func()) { h.queue <- fn })
+	h.d = New(h.backend, configs, func(fn func()) { h.queue <- fn }, func(width, height int) {
+		h.minimums = append(h.minimums, [2]int{width, height})
+	})
 	// Tall enough for the whole Setup: a tester clicks only
 	// what is in view.
 	h.tt = ui.NewTester(h.d.View, 1200, 2000)
@@ -496,6 +538,23 @@ func (h *harness) rules() {
 		}
 		if !slices.Equal(v.panes, v.root.panes(nil)) {
 			h.t.Fatalf("the Panes of %s are not listed in the order they stand", id)
+		}
+		// A Pane shows a session or a Viewport, never both, and no two
+		// Viewports show one Browser Tab.
+		tabs := map[string]bool{}
+		for i, p := range v.panes {
+			if p.viewport == nil {
+				continue
+			}
+			if p.session != nil {
+				h.t.Fatalf("%s of %s shows a session and a Viewport", paneName(i), id)
+			}
+			if tab := p.viewport.b.pack.Name + " " + p.viewport.tab; p.viewport.tab != "" {
+				if tabs[tab] {
+					h.t.Fatalf("two Panes of %s show the Browser Tab %s", id, tab)
+				}
+				tabs[tab] = true
+			}
 		}
 		shown := map[*session]int{}
 		for _, p := range v.panes {
@@ -609,6 +668,37 @@ func (h *harness) runs(ids ...string) {
 		return true
 	})
 }
+
+// ready has the workstation of a sandbox say that a pack's daemon
+// accepts connections.
+func (h *harness) ready(id string, m pack.Manifest) {
+	h.t.Helper()
+	status := h.d.view(id).workstation
+	status.Daemons = []sandbox.DaemonState{{Pack: m.Name, Ready: true}}
+	h.d.Apply(sandbox.Update{SandboxID: id, Workstation: &status})
+	h.settle("a frame", func() bool { return true })
+}
+
+// showBrowser clicks the control that has a Pane of the sandbox shown
+// show the test's browser, and returns the Viewport the Pane shows then.
+func (h *harness) showBrowser(pane int) *viewportView {
+	h.t.Helper()
+	v := h.d.views[h.d.selected]
+	h.click("Show Web Test Browser in " + paneName(pane))
+	h.settle("the Pane's Viewport", func() bool { return pane < len(v.panes) && v.panes[pane].viewport != nil })
+	return v.panes[pane].viewport
+}
+
+// What the controls of the Viewport that Pane 1 shows are labelled.
+const (
+	viewport1 = "Viewport of Pane 1"
+	address1  = "Address of Pane 1"
+	tabs1     = "Browser Tabs of Pane 1"
+	back1     = backLabel + " in Pane 1"
+	forward1  = forwardLabel + " in Pane 1"
+	newTab1   = newTabLabel + " in Pane 1"
+	closeTab1 = closeTabLabel + " in Pane 1"
+)
 
 // connOf is the connection of the session a Pane of a sandbox shows.
 func (h *harness) connOf(id string, pane int) *fakeConn {
@@ -1274,19 +1364,24 @@ func TestViewportIsPacedByTheView(t *testing.T) {
 	h := newHarness(t, []sandbox.Config{cfg}, browser)
 	h.d.view("s1").running = cfg
 	h.runs("s1")
-	if !h.tt.HasText(browserWaits) || len(h.backend.streams) != 0 {
-		t.Fatalf("before the daemon is ready the window shows %q", h.tt.Texts())
+	// A running sandbox shows its Panes and no browser, and asks its
+	// browser nothing, until a Pane is made to show it.
+	h.ready("s1", browser)
+	for range 5 {
+		h.settle("a frame", func() bool { return true })
+	}
+	if _, shown := h.tt.Find(viewport1); shown || len(h.backend.opens()) != 0 || h.backend.timesListed() != 0 {
+		t.Fatalf("with no Pane showing it, the browser was opened %d times and listed %d times: %q", len(h.backend.opens()), h.backend.timesListed(), h.tt.Texts())
 	}
 
-	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
-	vp := h.d.view("s1").viewportOf(browser)
+	vp := h.showBrowser(0)
 	h.settle("the first frame", func() bool { return vp.bitmap != nil })
-	stream := h.backend.streams[0]
+	stream := h.backend.opens()[0]
 	h.settle("more frames while the view is built", func() bool { return stream.timesAsked() >= 5 })
 
 	// Input goes to the stream, at the page's coordinates: the frame is
 	// 640 wide for a page of 1280.
-	box, ok := h.tt.Find("Web Test Browser viewport")
+	box, ok := h.tt.Find(viewport1)
 	if !ok {
 		t.Fatalf("no viewport in the window: %q", h.tt.Texts())
 	}
@@ -1325,7 +1420,9 @@ func TestViewportIsPacedByTheView(t *testing.T) {
 	}
 }
 
-func TestAPackWithoutAStreamHasNoTab(t *testing.T) {
+// A pack that has no Viewport Stream gives a Pane's strip no control to
+// show it by.
+func TestAPackWithoutAStreamHasNoControl(t *testing.T) {
 	plain, err := pack.Parse([]byte("name: linter\ntitle: Linter\nmcpBridge: {name: lint, command: [x]}\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -1333,6 +1430,7 @@ func TestAPackWithoutAStreamHasNoTab(t *testing.T) {
 	cfg := gated("s1", "Research")
 	cfg.Packs = []string{"linter"}
 	h := newHarness(t, []sandbox.Config{cfg}, plain)
+	h.d.view("s1").running = cfg
 	h.runs("s1")
 	if h.tt.HasText("Linter") || !h.tt.HasText("Pane 1") {
 		t.Errorf("a pack without a stream shows %q", h.tt.Texts())
@@ -1340,49 +1438,58 @@ func TestAPackWithoutAStreamHasNoTab(t *testing.T) {
 }
 
 // A running sandbox shows its Sandbox Terminal, which fills its page
-// beside the sidebar: its Panes, right under the Header. Where a pack
-// has a Viewport Stream, its viewport stands above the Panes.
+// beside the sidebar: its Panes, right under the Header, and nothing
+// over them. Where a pack has a Viewport Stream, each Pane's strip has a
+// control that shows it there, and a sandbox without such a pack has
+// none.
 func TestARunningSandboxShowsItsTerminal(t *testing.T) {
 	browser := browserPack(t)
 	plain, with := gated("s1", "Research"), gated("s2", "Scraper")
 	with.Packs = []string{browser.Name}
 	h := newHarness(t, []sandbox.Config{plain, with}, browser)
 	h.tt.SetSize(1280, 900)
+	h.d.view("s2").running = with
 	h.runs("s1", "s2")
-	strip, ok := h.tt.Find("Pane 1")
-	if !ok {
-		t.Fatalf("a running sandbox shows %q", h.tt.Texts())
-	}
 	// Under the Header and nothing else, beside the sidebar, and as wide
-	// as the page.
-	if strip.Y < headerHeight || strip.Y > headerHeight+40 {
-		t.Errorf("Pane 1 starts at %v, not right under a Header of %v", strip.Y, float32(headerHeight))
+	// and as high as the page.
+	whole := func(name string) {
+		t.Helper()
+		strip, ok := h.tt.Find("Pane 1")
+		if !ok {
+			t.Fatalf("a running sandbox shows %q", h.tt.Texts())
+		}
+		if strip.Y < headerHeight || strip.Y > headerHeight+40 {
+			t.Errorf("Pane 1 of %s starts at %v, not right under a Header of %v", name, strip.Y, float32(headerHeight))
+		}
+		cards, ok1 := h.tt.Find(sidebarSandboxes)
+		pane, ok2 := h.tt.Find("Pane 1 of " + name)
+		if !ok1 || !ok2 || cards.X >= pane.X || pane.X > h.d.sidebarWidth+8 || pane.X+pane.W < 1279 || pane.Y > headerHeight+2 || pane.Y+pane.H < 899 {
+			t.Errorf("the sidebar is at %+v and Pane 1 of %s at %+v: %q", cards, name, pane, h.tt.Texts())
+		}
 	}
-	if h.tt.HasText(browserWaits) {
-		t.Errorf("a sandbox without a Viewport Stream shows a viewport: %q", h.tt.Texts())
-	}
-	cards, ok1 := h.tt.Find(sidebarSandboxes)
-	pane, ok2 := h.tt.Find("Pane 1 of Research")
-	if !ok1 || !ok2 || cards.X >= pane.X || pane.X > h.d.sidebarWidth+8 || pane.X+pane.W < 1279 || pane.Y+pane.H < 899 {
-		t.Errorf("the sidebar is at %+v and Pane 1 at %+v: %q", cards, pane, h.tt.Texts())
+	whole("Research")
+	if _, ok := h.tt.Find("Show Web Test Browser in Pane 1"); ok {
+		t.Errorf("a sandbox without a Viewport Stream offers one: %q", h.tt.Texts())
 	}
 
 	h.click("Scraper")
-	over, ok := h.tt.Find(browserWaits)
-	under, ok2 := h.tt.Find("Pane 1")
-	if !ok || !ok2 || over.Y >= under.Y || over.Y < headerHeight {
-		t.Fatalf("the viewport is at %+v and Pane 1 at %+v: %q", over, under, h.tt.Texts())
+	whole("Scraper")
+	show, ok := h.tt.Find("Show Web Test Browser in Pane 1")
+	strip, ok2 := h.tt.Find("Pane 1 of Scraper")
+	if !ok || !ok2 || show.Y < strip.Y || show.Y+show.H > strip.Y+stripHeight {
+		t.Fatalf("the control that shows the browser is at %+v, not in the strip of its Pane at %+v: %q", show, strip, h.tt.Texts())
 	}
-	// One pack's viewport needs nothing to choose it by.
-	if _, ok := h.tt.Find(viewportsLabel); ok {
-		t.Errorf("the one viewport of a sandbox stands under a strip of tabs: %q", h.tt.Texts())
+	if _, shown := h.tt.Find(viewport1); shown || h.tt.HasText(browserWaits) {
+		t.Errorf("a browser shows though no Pane was made to show it: %q", h.tt.Texts())
 	}
 }
 
-// Where more than one of a sandbox's packs has a Viewport Stream, a strip
-// over the viewport names each by its pack's title, and a click there
-// shows that one.
-func TestAStripChoosesAmongViewports(t *testing.T) {
+// Where more than one of a sandbox's packs has a Viewport Stream, a
+// Pane's strip has a control for each, named by its pack's title, and a
+// Pane shows the one whose control was clicked: another Pane shows the
+// other at the same time, and a click on the other's control in a Pane
+// that shows the first shows the other there.
+func TestAStripOffersEveryViewport(t *testing.T) {
 	browser := browserPack(t)
 	second, err := pack.Parse([]byte("name: second-browser\ntitle: Second Browser\ndescription: Headless Chromium.\ndaemonProcess: {command: [chromium], readinessPort: 9333}\nviewportStream: {type: cdp_screencast, port: 9333}\n"))
 	if err != nil {
@@ -1391,18 +1498,39 @@ func TestAStripChoosesAmongViewports(t *testing.T) {
 	cfg := gated("s1", "Research")
 	cfg.Packs = []string{browser.Name, second.Name}
 	h := newHarness(t, []sandbox.Config{cfg}, browser, second)
-	h.d.view("s1").running = cfg
+	h.tt.SetSize(1280, 900)
+	v := h.d.view("s1")
+	v.running = cfg
 	h.runs("s1")
-	strip, ok := h.tt.Find(viewportsLabel)
-	first, ok2 := h.tt.Find(browserWaits)
-	_, ok3 := h.tt.Find("Web Test Browser")
-	if !ok || !ok2 || !ok3 || strip.Y >= first.Y {
-		t.Fatalf("the strip is at %+v and the first viewport at %+v: %q", strip, first, h.tt.Texts())
+	h.backend.browse(viewport.BrowserTab{ID: "t1", Title: "Example Domain", Address: "https://example.com/"})
+	status := sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}, {Pack: second.Name, Ready: true}}}
+	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &status})
+	h.click(beside(0))
+	h.settle("a second Pane", func() bool { return len(v.panes) == 2 && v.panes[1].session != nil })
+
+	one, ok := h.tt.Find("Show Web Test Browser in Pane 1")
+	two, ok2 := h.tt.Find("Show Second Browser in Pane 1")
+	if !ok || !ok2 || one.X >= two.X {
+		t.Fatalf("the controls of the two browsers are at %+v and %+v: %q", one, two, h.tt.Texts())
 	}
-	h.click("Second Browser")
-	if !h.tt.HasText("Waiting for Second Browser to be ready…") || h.tt.HasText(browserWaits) {
-		t.Errorf("a click on the second viewport's tab shows %q", h.tt.Texts())
+	h.click("Show Web Test Browser in Pane 1")
+	h.click("Show Second Browser in Pane 2")
+	h.settle("both Panes to show their browsers", func() bool {
+		a, b := v.panes[0].viewport, v.panes[1].viewport
+		return a != nil && b != nil && a.pack.Name == browser.Name && b.pack.Name == second.Name && a.bitmap != nil && b.bitmap != nil
+	})
+	// Each strip names the browser its Pane shows, and offers the other.
+	if _, ok := h.tt.Find("Show Web Test Browser in Pane 1"); ok {
+		t.Errorf("a Pane that shows a browser offers to show it: %q", h.tt.Texts())
 	}
+	if !h.tt.HasText("Web Test Browser") || !h.tt.HasText("Second Browser") {
+		t.Errorf("the strips do not name the browsers their Panes show: %q", h.tt.Texts())
+	}
+	h.click("Show Second Browser in Pane 1")
+	h.settle("the first Pane to show the second browser", func() bool {
+		a := v.panes[0].viewport
+		return a != nil && a.pack.Name == second.Name
+	})
 }
 
 // The window's own title bar is hidden: the Header and the sidebar make
@@ -2818,7 +2946,9 @@ func TestAShellThatComesTooLateIsHungUp(t *testing.T) {
 func (h *harness) agentIn(id string, agents ...string) {
 	h.t.Helper()
 	v := h.d.view(id)
-	status := sandbox.WorkstationStatus{Clock: "2026-11-20T09:00:00Z"}
+	// What the workstation said of its daemons and its memory stands.
+	status := v.workstation
+	status.Clock, status.Sessions = "2026-11-20T09:00:00Z", nil
 	for _, s := range v.sessions {
 		agent := s.agent
 		for i, p := range v.panes {
@@ -3509,13 +3639,16 @@ func TestTheDashboardReadsNoTerminal(t *testing.T) {
 	}
 }
 
-// A link that a sandbox's user Command-clicks in a Pane opens in a new
-// Browser Tab of the sandbox's own browser, which is shown: a web
-// address, as it was printed, where the sandbox has a browser. Without
-// the key nothing opens. Any other link, and every link of a sandbox
-// that has no browser, the terminal opens with this Mac's. The address
-// reaches the browser and is in the window only where the browser's own
-// words are: the Address Bar.
+// A link that a sandbox's user Command-clicks in a Pane is never opened
+// by this Mac. A web address, as it was printed, where the sandbox has a
+// browser, opens in a new Browser Tab of that browser: in a Pane that is
+// added for it beside the one that was clicked in, or below it, and
+// from then on in the first Pane that shows the browser. Without the key
+// nothing happens. Anything else that was clicked, a web address no Pane
+// can show, and every link of a sandbox that has no browser, goes to
+// this Mac's clipboard, and the Pane's strip says so for a moment. The
+// address reaches the browser, and is in the window only where the
+// browser's own words are: the Address Bar.
 func TestALinkOpensInTheSandboxsBrowser(t *testing.T) {
 	browser := browserPack(t)
 	cfg := gated("s1", "Research")
@@ -3524,91 +3657,217 @@ func TestALinkOpensInTheSandboxsBrowser(t *testing.T) {
 	h.tt.SetSize(1280, 900)
 	home := viewport.BrowserTab{ID: "t1", Title: "Example Domain", Address: "https://example.com/"}
 	h.backend.browse(home)
-	h.d.view("s1").running = cfg
-	h.runs("s1")
-	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
 	v := h.d.view("s1")
-	vp := v.viewportOf(browser)
-	h.settle("the browser's first Browser Tab", func() bool { return vp.address == home.Address && v.panes[0].session != nil })
+	v.running = cfg
+	h.runs("s1")
+	h.ready("s1", browser)
 
-	// prints fills the screen of the sandbox shown with one hyperlink,
-	// whose words say nothing of where it leads, and click clicks in the
-	// middle of it.
-	prints := func(id, address string) {
+	// prints fills the first lines of a Pane of the sandbox shown with
+	// one hyperlink, whose words say nothing of where it leads, and click
+	// clicks in the middle of them. A terminal keeps only so many cells
+	// of hyperlinks: the link is some lines long, and no screens.
+	printed := 0
+	prints := func(pane int, address string) {
 		t.Helper()
-		screen := h.d.view(id).panes[0].session.term
-		h.connOf(id, 0).shell.Write([]byte("\x1b[2J\x1b[H\x1b]8;;" + address + "\x1b\\" + strings.Repeat("Click here to authenticate ", 400) + "\x1b]8;;\x1b\\"))
-		h.settle("the link to be printed", func() bool { return strings.Contains(screen.Text(), "authenticate Click") })
+		id := h.d.selected
+		screen := h.d.view(id).panes[pane].session.term
+		// Each link's words are its own, so that the one before is seen
+		// to be gone.
+		printed++
+		words := "Click here to authenticate " + strconv.Itoa(printed) + " "
+		h.connOf(id, pane).shell.Write([]byte("\x1b[2J\x1b[H\x1b]8;;" + address + "\x1b\\" + strings.Repeat(words, 40) + "\x1b]8;;\x1b\\"))
+		h.settle("the link to be printed", func() bool {
+			return strings.Contains(strings.Join(strings.Fields(screen.Text()), " "), "authenticate "+strconv.Itoa(printed)+" Click")
+		})
 	}
-	click := func(mods ui.Modifiers, name string) {
+	click := func(mods ui.Modifiers, pane int) {
 		t.Helper()
-		at, ok := h.tt.Find("Pane 1 of " + name)
+		at, ok := h.tt.Find(paneName(pane) + " of " + h.d.config(h.d.selected).Name)
 		if !ok {
-			t.Fatalf("no Pane in the window: %q", h.tt.Texts())
+			t.Fatalf("no %s in the window: %q", paneName(pane), h.tt.Texts())
 		}
-		h.tt.ClickAtWith(mods, at.X+at.W/2, at.Y+at.H/2+stripHeight/2)
+		h.tt.ClickAtWith(mods, at.X+at.W/2, at.Y+stripHeight+40)
 		h.tt.Frame()
+	}
+	// nowhereElse is that no text of the window but the Address Bar's
+	// holds a part of an address.
+	nowhereElse := func(part, bar string) {
+		t.Helper()
+		for _, text := range h.tt.Texts() {
+			if strings.Contains(text, part) && text != bar {
+				t.Errorf("the window says %q", text)
+			}
+		}
+	}
+	// thisMac is that this Mac was asked to open nothing.
+	thisMac := func() {
+		t.Helper()
+		if opened := h.tt.OpenedURLs(); len(opened) != 0 {
+			t.Fatalf("this Mac was asked to open %q", opened)
+		}
+	}
+	typed := func(pane int, text string) {
+		t.Helper()
+		conn := h.connOf("s1", pane)
+		before, _ := conn.state()
+		h.tt.Type(text)
+		h.settle("what was typed to reach "+paneName(pane), func() bool { now, _ := conn.state(); return now == before+text })
 	}
 
 	// An address with escapes of its own, as one to sign in at has.
 	link := "https://accounts.example.com/o/auth?redirect_uri=http%3A%2F%2Flocalhost%3A8085%2Fcallback&scope=a%20b+c#state"
-	prints("s1", link)
-	click(0, "Research")
+	prints(0, link)
+	click(0, 0)
 	h.settle("a frame", func() bool { return true })
-	if got := h.backend.linksOpened(); len(got) != 0 || len(h.tt.OpenedURLs()) != 0 {
-		t.Fatalf("a click without Command opened %q in the browser and %q with this Mac's", got, h.tt.OpenedURLs())
+	if got := h.backend.linksOpened(); len(got) != 0 || len(v.panes) != 1 || h.tt.Clipboard() != "" {
+		t.Fatalf("a click without Command opened %q in the browser, in %d Panes, with %q on the clipboard", got, len(v.panes), h.tt.Clipboard())
 	}
-	click(ui.Super, "Research")
-	h.settle("the link to open in the sandbox's browser", func() bool { return len(h.backend.linksOpened()) == 1 })
-	if got := h.backend.linksOpened(); got[0] != "s1 "+link {
-		t.Fatalf("the browser was asked for %q, want the link as it was printed", got)
-	}
-	h.settle("the new Browser Tab to be shown", func() bool {
-		opens := h.backend.opens()
-		return len(opens) == 2 && opens[1].tab == "link1" && vp.address == link && h.tt.HasText("Sign in")
+	thisMac()
+
+	// With Command: no Pane shows the browser, so one is added beside
+	// the Pane that was clicked in, and shows the link's Browser Tab. The
+	// keyboard stays where it was: in the terminal.
+	click(ui.Super, 0)
+	h.settle("the link to open in a Pane beside", func() bool {
+		return len(v.panes) == 2 && v.panes[1].viewport != nil && v.panes[1].viewport.address == link && v.panes[1].viewport.bitmap != nil
 	})
-	if opened := h.tt.OpenedURLs(); len(opened) != 0 {
-		t.Errorf("this Mac was asked to open %q", opened)
+	vp := v.panes[1].viewport
+	if got := h.backend.linksOpened(); len(got) != 1 || got[0] != "s1 "+link {
+		t.Fatalf("the browser was asked for %q, want the link as it was printed, once", got)
 	}
+	if opens := h.backend.opens(); len(opens) != 1 || opens[0].tab != "link1" || vp.tab != "link1" {
+		t.Fatalf("the Pane shows the Browser Tab %q by %d streams, want the link's", vp.tab, len(opens))
+	}
+	one, ok := h.tt.Find("Pane 1 of Research")
+	two, ok2 := h.tt.Find("Pane 2 of Research")
+	if !ok || !ok2 || two.X < one.X+one.W || two.Y != one.Y || two.W < viewportMinWidth || two.H < viewportMinHeight || v.panes[0].session == nil {
+		t.Fatalf("the Pane of the link's Browser Tab is at %+v, and the Pane that was clicked in at %+v", two, one)
+	}
+	thisMac()
+	if h.tt.Clipboard() != "" {
+		t.Errorf("a link that opened in the browser was copied too: %q", h.tt.Clipboard())
+	}
+	typed(0, "still here")
 	// The address is the Address Bar's, and nowhere else in the window.
-	for _, text := range h.tt.Texts() {
-		if strings.Contains(text, "accounts.example.com") && text != link {
-			t.Errorf("the window says %q", text)
-		}
-	}
+	nowhereElse("accounts.example.com", link)
 
-	// A link that is no web address is left to the terminal, which
-	// opens it with this Mac's.
-	prints("s1", "mailto:someone@example.com")
-	click(ui.Super, "Research")
-	h.settle("the link that is no web address to be opened with this Mac's", func() bool { return slices.Equal(h.tt.OpenedURLs(), []string{"mailto:someone@example.com"}) })
-	if got := h.backend.linksOpened(); len(got) != 1 {
-		t.Errorf("the browser was asked for %q", got)
+	// The next link opens in the Pane that shows the browser: no Pane is
+	// added for it.
+	next := "https://accounts.example.com/next"
+	prints(0, next)
+	click(ui.Super, 0)
+	h.settle("the next link to open in the Pane that shows the browser", func() bool {
+		return len(h.backend.linksOpened()) == 2 && vp.tab == "link2" && vp.address == next
+	})
+	if len(v.panes) != 2 || v.panes[1].viewport != vp {
+		t.Fatalf("a second link made %d Panes", len(v.panes))
 	}
+	thisMac()
 
-	// A browser that opens nothing: that is said, over its frames, and
-	// trying again shows the browser as it was.
+	// A browser that opens nothing: that is said, where its frames are,
+	// and trying again shows the browser as it was.
 	h.backend.mu.Lock()
 	h.backend.tabErr = errors.New("the browser does not answer")
 	h.backend.mu.Unlock()
-	prints("s1", link)
-	click(ui.Super, "Research")
+	prints(0, link)
+	click(ui.Super, 0)
 	h.settle("the failure to be said", func() bool { return h.tt.HasText("The Browser Tab was not opened: the browser does not answer") })
 	h.click("Try Again")
-	h.settle("the browser again", func() bool { _, ok := h.tt.Find("Web Test Browser viewport"); return ok })
+	h.settle("the browser again", func() bool { _, ok := h.tt.Find("Viewport of Pane 2"); return ok })
+	h.backend.mu.Lock()
+	h.backend.tabErr = nil
+	h.backend.mu.Unlock()
+	thisMac()
+	asked := len(h.backend.linksOpened())
 
-	// A sandbox without a browser: its link is this Mac's to open.
+	// A link that is no web address is nobody's to open: it goes to this
+	// Mac's clipboard, and the Pane's strip says so, in the app's own
+	// word, for a moment.
+	prints(0, "mailto:someone@example.com")
+	click(ui.Super, 0)
+	h.settle("the link that is no web address to be copied", func() bool { return h.tt.Clipboard() == "mailto:someone@example.com" })
+	said, ok := h.tt.Find(copiedSays)
+	strip, _ := h.tt.Find("Pane 1 of Research")
+	if !ok || said.Y < strip.Y || said.Y+said.H > strip.Y+stripHeight || said.X < strip.X || said.X > strip.X+strip.W {
+		t.Errorf("that the link was copied is said at %+v, not in the strip of its Pane at %+v: %q", said, strip, h.tt.Texts())
+	}
+	nowhereElse("someone@example.com", "")
+	thisMac()
+	h.settle("the strip to say no more of it", func() bool { return !h.tt.HasText(copiedSays) })
+	if got := h.backend.linksOpened(); len(got) != asked {
+		t.Errorf("the browser was asked for %q", got)
+	}
+	// So does what looks like the path of a file, which a terminal takes
+	// for a link too.
+	h.connOf("s1", 0).shell.Write([]byte("\x1b[2J\x1b[H" + strings.Repeat("/workspace/project/main.go ", 40)))
+	h.settle("the path to be printed", func() bool { return strings.Contains(v.panes[0].session.term.Text(), "main.go /workspace") })
+	click(ui.Super, 0)
+	h.settle("the path to be copied", func() bool { return strings.Contains(h.tt.Clipboard(), "/workspace/project/main.go") })
+	thisMac()
+	h.settle("the strip to say no more of it", func() bool { return !h.tt.HasText(copiedSays) })
+
+	// With the browser's Pane closed, the Pane that was clicked in is
+	// half as wide: a Viewport has no room beside it, and has below it.
+	h.click("Close Pane 2")
+	h.settle("the Pane to close", func() bool { return len(v.panes) == 1 })
+	h.click(beside(0))
+	h.settle("a second Pane", func() bool { return len(v.panes) == 2 && v.panes[1].session != nil })
+	prints(0, link)
+	click(ui.Super, 0)
+	h.settle("the link to open in a Pane below", func() bool {
+		return len(v.panes) == 3 && v.panes[1].viewport != nil && v.panes[1].viewport.address == link
+	})
+	one, _ = h.tt.Find("Pane 1 of Research")
+	under, _ := h.tt.Find("Pane 2 of Research")
+	if under.Y < one.Y+one.H || under.X != one.X || under.W != one.W || under.W < viewportMinWidth || under.H < viewportMinHeight {
+		t.Fatalf("the Pane of the link's Browser Tab is at %+v, and the Pane that was clicked in at %+v", under, one)
+	}
+	thisMac()
+
+	// With that one closed and the Pane halved again, no Viewport has
+	// room beside it or below it: the web address goes to the clipboard,
+	// and the browser is asked nothing.
+	h.click("Close Pane 2")
+	h.settle("the Pane to close", func() bool { return len(v.panes) == 2 })
+	h.click(below(0))
+	h.settle("a third Pane", func() bool { return len(v.panes) == 3 && v.panes[1].session != nil })
+	asked = len(h.backend.linksOpened())
+	h.tt.SetClipboard("")
+	h.terminalAt(0)
+	prints(0, link)
+	click(ui.Super, 0)
+	h.settle("the link no Pane can show to be copied", func() bool { return h.tt.Clipboard() == link })
+	if got := h.backend.linksOpened(); len(got) != asked || len(v.panes) != 3 || !h.tt.HasText(copiedSays) {
+		t.Errorf("a web address no Pane has room to show was opened as %q, in %d Panes: %q", got[asked:], len(v.panes), h.tt.Texts())
+	}
+	nowhereElse("accounts.example.com", "")
+	thisMac()
+
+	// A sandbox without a browser: its link goes to the clipboard too.
 	h.d.selected = "s2"
 	h.runs("s2")
 	h.settle("the other sandbox's shell", func() bool { return h.d.view("s2").panes[0].session != nil })
-	prints("s2", link)
-	click(ui.Super, "Plain")
-	h.settle("the link of a sandbox without a browser to be opened with this Mac's", func() bool {
-		return slices.Equal(h.tt.OpenedURLs(), []string{"mailto:someone@example.com", link})
-	})
-	if got := h.backend.linksOpened(); len(got) != 2 {
-		t.Errorf("a sandbox without a browser had %q opened in one", got)
+	h.tt.SetClipboard("")
+	prints(0, next)
+	click(ui.Super, 0)
+	h.settle("the link of a sandbox without a browser to be copied", func() bool { return h.tt.Clipboard() == next })
+	if got := h.backend.linksOpened(); len(got) != asked || len(h.d.view("s2").panes) != 1 {
+		t.Errorf("a sandbox without a browser had %q opened in one", got[asked:])
 	}
+	thisMac()
+
+	// Whatever the link, the terminal is told that it was taken: what is
+	// left to a terminal, it opens with this Mac's.
+	for _, id := range []string{"s1", "s2"} {
+		session := h.d.view(id).panes[0].session
+		for _, any := range []string{link, "http://example.com/", "mailto:someone@example.com", "file:///etc/passwd", "ssh://host", "./a.txt", "javascript:alert(1)", ""} {
+			if !session.openLink(any) {
+				t.Errorf("the link %q of %s was left to the terminal", any, id)
+			}
+		}
+	}
+	h.settle("a frame", func() bool { return true })
+	thisMac()
 }
 
 // order is the order in which the window shows some texts, top to
@@ -3841,11 +4100,11 @@ func TestCardsKeepTheSidebarsKeys(t *testing.T) {
 }
 
 // At the window's smallest size everything still has its place inside
-// the window: the Header's controls, the viewport over the Panes, and
-// sixteen Panes, four by four, each with its strip's controls and a
+// the window: the Header's controls, and sixteen Panes, four by four,
+// each with all of its strip's controls, the browser's among them, and a
 // terminal with room to work in.
 func TestTheWindowAtItsSmallest(t *testing.T) {
-	const width, height = 900, 600
+	const width, height = MinWindowWidth, MinWindowHeight
 	browser := browserPack(t)
 	cfg := gated("s1", "A sandbox with quite a long name")
 	cfg.Packs = []string{browser.Name}
@@ -3858,10 +4117,6 @@ func TestTheWindowAtItsSmallest(t *testing.T) {
 	h.d.Apply(sandbox.Update{SandboxID: "s1", MCPCall: &sandbox.MCPCall{Time: time.Now(), Server: "browser", FromAgent: true, Method: "tools/call"}})
 	// The control of the MCP calls takes its place in the Header.
 	h.tt.Frame()
-	for n := 2; n <= 3; n++ {
-		h.click(h.besideLast())
-		h.settle("another Pane's shell", func() bool { return len(v.panes) == n && v.panes[n-1].session != nil })
-	}
 
 	inside := func(what string) ui.Rect {
 		t.Helper()
@@ -3874,40 +4129,30 @@ func TestTheWindowAtItsSmallest(t *testing.T) {
 		}
 		return box
 	}
-	// With three Panes, the Header holds every control it has, and the
-	// viewport stands over the Panes.
+	// The Header holds every control it has.
 	for _, what := range []string{
 		attentionLabel, "GATE LOCKED [Exit Address Mismatch]", "GATE OPEN [203.0.113.7]", "New Sandbox",
 		"A sandbox with quite a long name", mcpCallsLabel, "Stop", "Setup", "Clone", "Destroy",
-		browserWaits,
 	} {
 		inside(what)
 	}
-	if over, one := inside(browserWaits), inside("Pane 1"); over.Y >= one.Y {
-		t.Errorf("the viewport is at %+v and Pane 1 at %+v", over, one)
-	}
 
-	// Sixteen Panes, in a sandbox whose page is its Panes alone: every
-	// one is inside the window with all of its strip's controls, none of
-	// which gave way to the Pane's name, and has a terminal with room to
-	// work in.
-	h.click("Scraper")
-	v = h.d.view("s2")
-	h.settle("the sandbox's first Pane", func() bool { return len(v.panes) == 1 && v.panes[0].session != nil })
+	// Sixteen Panes: every one is inside the window with all of its
+	// strip's controls, none of which gave way to the Pane's name, and
+	// has a terminal with room to work in.
 	h.fill()
 	if len(v.panes) != 16 {
 		t.Fatalf("filled, the page has %d Panes", len(v.panes))
 	}
-	lead := inside("Pane 1 of Scraper")
+	const sandboxName = " of A sandbox with quite a long name"
+	lead := inside("Pane 1" + sandboxName)
 	for i, p := range v.panes {
 		name := paneName(i)
-		at := inside(name + " of Scraper")
+		at := inside(name + sandboxName)
 		if math.Abs(float64(at.W-lead.W)) > 1 || math.Abs(float64(at.H-lead.H)) > 1 {
 			t.Errorf("at %dx%d %s is at %+v and Pane 1 at %+v, want sixteen of one size", width, height, name, at, lead)
 		}
-		// The four of a row stand side by side, and the rows one under
-		// another: a Pane is named by where it stands in its column.
-		for _, control := range []string{beside(i), below(i), "Close " + name} {
+		for _, control := range []string{beside(i), below(i), "Show Web Test Browser in " + name, "Close " + name} {
 			box := inside(control)
 			if box.W != glyphButtonSize || box.H != glyphButtonSize || box.X < at.X || box.X+box.W > at.X+at.W || box.Y < at.Y || box.Y+box.H > at.Y+stripHeight {
 				t.Errorf("at %dx%d %q is at %+v, not whole in the strip of its Pane at %+v", width, height, control, box, at)
@@ -4004,8 +4249,8 @@ func TestTheViewportTakesWhatIsTypedAndGoesBackAndForward(t *testing.T) {
 	h.backend.browse(home)
 	h.d.view("s1").running = cfg
 	h.runs("s1")
-	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
-	vp := h.d.view("s1").viewportOf(browser)
+	h.ready("s1", browser)
+	vp := h.showBrowser(0)
 	h.settle("the first frame", func() bool { return vp.bitmap != nil && vp.stream != nil })
 	stream := h.backend.opens()[0]
 	// since waits until the stream got n inputs after its first from,
@@ -4017,7 +4262,7 @@ func TestTheViewportTakesWhatIsTypedAndGoesBackAndForward(t *testing.T) {
 	}
 	count := func() int { return len(stream.inputsSince(0)) }
 
-	box, ok := h.tt.Find("Web Test Browser viewport")
+	box, ok := h.tt.Find(viewport1)
 	if !ok {
 		t.Fatalf("no viewport in the window: %q", h.tt.Texts())
 	}
@@ -4056,15 +4301,15 @@ func TestTheViewportTakesWhatIsTypedAndGoesBackAndForward(t *testing.T) {
 	}
 
 	// Back and Forward stand before the Address Bar, in its row.
-	back, ok1 := h.tt.Find(backLabel)
-	forward, ok2 := h.tt.Find(forwardLabel)
-	field, ok3 := h.tt.Find("Address of Web Test Browser")
+	back, ok1 := h.tt.Find(back1)
+	forward, ok2 := h.tt.Find(forward1)
+	field, ok3 := h.tt.Find(address1)
 	if !ok1 || !ok2 || !ok3 || back.X >= forward.X || forward.X+forward.W > field.X || back.Y < field.Y-field.H || back.Y+back.H > box.Y+1 {
 		t.Fatalf("Back is at %+v, Forward at %+v, the Address Bar at %+v and the frames at %+v", back, forward, field, box)
 	}
 	from = count()
-	h.click(backLabel)
-	h.click(forwardLabel)
+	h.click(back1)
+	h.click(forward1)
 	want = []string{"back", "forward"}
 	if got := since("Back and Forward to reach the stream", from, len(want)); !slices.Equal(got, want) {
 		t.Fatalf("Back and Forward reached the stream as %q", got)
@@ -4088,18 +4333,18 @@ func TestTheViewportTakesWhatIsTypedAndGoesBackAndForward(t *testing.T) {
 
 	// An address the Browser Tab was sent to is not what the Address
 	// Bar holds once the tab goes back: it holds what the browser lists.
-	h.replace("Address of Web Test Browser", "example.org/docs")
+	h.replace(address1, "example.org/docs")
 	h.tt.Key(0, ui.KeyEnter)
 	h.settle("the address to reach the stream", func() bool { return stream.sawInput("navigate https://example.org/docs") })
 	if vp.address != "https://example.org/docs" {
 		t.Fatalf("once sent, the Address Bar holds %q", vp.address)
 	}
-	h.click(backLabel)
+	h.click(back1)
 	h.settle("the Address Bar to hold what the browser lists", func() bool { return vp.address == home.Address })
 
 	// With the keyboard in the Address Bar, what is typed is the bar's.
 	from = count()
-	h.replace("Address of Web Test Browser", "example.net")
+	h.replace(address1, "example.net")
 	if got := stream.inputsSince(from); len(got) != 0 {
 		t.Errorf("what was typed into the Address Bar reached the page: %q", got)
 	}
@@ -4121,8 +4366,8 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 	h.backend.browse(home)
 	h.d.view("s1").running = cfg
 	h.runs("s1")
-	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
-	vp := h.d.view("s1").viewportOf(browser)
+	h.ready("s1", browser)
+	vp := h.showBrowser(0)
 	h.settle("the first frame", func() bool { return vp.bitmap != nil && vp.stream != nil && vp.address == home.Address })
 	stream := h.backend.opens()[0]
 	count := func() int { return len(stream.inputsSince(0)) }
@@ -4141,7 +4386,7 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 		h.backend.selected = text
 		h.backend.mu.Unlock()
 	}
-	box, ok := h.tt.Find("Web Test Browser viewport")
+	box, ok := h.tt.Find(viewport1)
 	if !ok {
 		t.Fatalf("no viewport in the window: %q", h.tt.Texts())
 	}
@@ -4193,7 +4438,7 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 
 	// With the keyboard in the Address Bar, the commands are the bar's.
 	h.tt.SetClipboard("example.net")
-	h.replace("Address of Web Test Browser", "")
+	h.replace(address1, "")
 	from = count()
 	h.tt.Command("paste")
 	h.settle("the Address Bar to take what was pasted", func() bool { return vp.address == "example.net" })
@@ -4204,8 +4449,8 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 
 	// Close Browser Tab stands after the Address Bar, in its row, with
 	// one Browser Tab too.
-	closer, ok1 := h.tt.Find(closeTabLabel)
-	field, ok2 := h.tt.Find("Address of Web Test Browser")
+	closer, ok1 := h.tt.Find(closeTab1)
+	field, ok2 := h.tt.Find(address1)
 	if !ok1 || !ok2 || closer.X < field.X+field.W || closer.Y < field.Y-field.H || closer.Y > field.Y+field.H {
 		t.Fatalf("Close Browser Tab is at %+v and the Address Bar at %+v: %q", closer, field, h.tt.Texts())
 	}
@@ -4223,17 +4468,17 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 		}
 	}
 	fails(&h.backend.closeErr, true)
-	h.click(closeTabLabel)
+	h.click(closeTab1)
 	h.settle("the failure to be said", func() bool {
 		return h.tt.HasText("The Browser Tab was not closed: the browser does not answer")
 	})
 	h.click("Try Again")
 	fails(&h.backend.closeErr, false)
-	h.settle("the browser again", func() bool { _, ok := h.tt.Find(closeTabLabel); return ok })
+	h.settle("the browser again", func() bool { _, ok := h.tt.Find(closeTab1); return ok })
 
 	// Closed: the other Browser Tab is shown, and nothing is said of an
 	// error.
-	h.click(closeTabLabel)
+	h.click(closeTab1)
 	h.settle("the Browser Tab that is left to be shown", func() bool {
 		opens := h.backend.opens()
 		return len(opens) == 2 && opens[1].tab == "t2" && vp.address == docs.Address
@@ -4251,7 +4496,7 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 	// said, and nothing is closed.
 	last := h.backend.opens()[1]
 	fails(&h.backend.tabErr, true)
-	h.click(closeTabLabel)
+	h.click(closeTab1)
 	h.settle("the failure to be said", func() bool {
 		return h.tt.HasText("The Browser Tab was not opened: the browser does not answer")
 	})
@@ -4260,12 +4505,12 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 	}
 	h.click("Try Again")
 	fails(&h.backend.tabErr, false)
-	h.settle("the browser again", func() bool { _, ok := h.tt.Find(closeTabLabel); return ok })
+	h.settle("the browser again", func() bool { _, ok := h.tt.Find(closeTab1); return ok })
 
 	// The blank one is shown, with the keyboard in the Address Bar,
 	// emptied, as a new Browser Tab's is; and the last one is closed,
 	// once: the browser lists the blank one alone.
-	h.click(closeTabLabel)
+	h.click(closeTab1)
 	h.settle("the blank Browser Tab to be shown in the last one's place", func() bool {
 		opens := h.backend.opens()
 		return len(opens) == 3 && opens[2].tab == "link2" && last.sawInput("close tab") && !h.tt.HasText("Docs")
@@ -4290,7 +4535,7 @@ func TestTheViewportTakesTheEditMenuAndClosesABrowserTab(t *testing.T) {
 	if closes != 1 || len(left) != 1 || left[0].ID != "link2" {
 		t.Errorf("the last Browser Tab was asked to close %d times, and the browser lists %+v", closes, left)
 	}
-	if _, ok := h.tt.Find(closeTabLabel); !ok || h.tt.HasText("Try Again") {
+	if _, ok := h.tt.Find(closeTab1); !ok || h.tt.HasText("Try Again") {
 		t.Errorf("with a blank Browser Tab in the last one's place the viewport shows %q", h.tt.Texts())
 	}
 }
@@ -4309,18 +4554,18 @@ func TestANewBrowserTabIsBlankAndAsksWhereToGo(t *testing.T) {
 	h.backend.browse(home)
 	h.d.view("s1").running = cfg
 	h.runs("s1")
-	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
-	vp := h.d.view("s1").viewportOf(browser)
+	h.ready("s1", browser)
+	vp := h.showBrowser(0)
 	h.settle("the first frame", func() bool { return vp.bitmap != nil && vp.stream != nil && vp.address == home.Address })
 
 	// It stands after the Address Bar, in its row, with one Browser Tab
 	// too.
-	adder, ok1 := h.tt.Find(newTabLabel)
-	field, ok2 := h.tt.Find("Address of Web Test Browser")
+	adder, ok1 := h.tt.Find(newTab1)
+	field, ok2 := h.tt.Find(address1)
 	if !ok1 || !ok2 || adder.X < field.X+field.W || adder.Y < field.Y-field.H || adder.Y > field.Y+field.H {
 		t.Fatalf("New Browser Tab is at %+v and the Address Bar at %+v: %q", adder, field, h.tt.Texts())
 	}
-	h.click(newTabLabel)
+	h.click(newTab1)
 	h.settle("the blank Browser Tab to be shown", func() bool {
 		opens := h.backend.opens()
 		return len(opens) == 2 && opens[1].tab == "link1" && h.tt.HasText("Sign in")
@@ -4343,14 +4588,14 @@ func TestANewBrowserTabIsBlankAndAsksWhereToGo(t *testing.T) {
 		t.Errorf("the Browser Tab that was shown before got %q", first.inputsSince(0))
 	}
 	// Both are in the strip now, and the new one can be closed.
-	if _, ok := h.tt.Find(closeTabLabel); !ok {
+	if _, ok := h.tt.Find(closeTab1); !ok {
 		t.Errorf("with two Browser Tabs the viewport shows %q", h.tt.Texts())
 	}
 }
 
 // The tests do not wait a second between two listings of the Browser
 // Tabs.
-func init() { tabsEvery = 5 * time.Millisecond }
+func init() { tabsEvery, copiedFor = 5*time.Millisecond, 150*time.Millisecond }
 
 // Over a browser's viewport stands the Address Bar, which holds the
 // address of the Browser Tab shown and sends that tab to what is typed
@@ -4367,12 +4612,12 @@ func TestTheViewportHasAnAddressBarAndBrowserTabs(t *testing.T) {
 	h.backend.browse(home)
 	h.d.view("s1").running = cfg
 	h.runs("s1")
-	h.d.Apply(sandbox.Update{SandboxID: "s1", Workstation: &sandbox.WorkstationStatus{Daemons: []sandbox.DaemonState{{Pack: browser.Name, Ready: true}}}})
-	vp := h.d.view("s1").viewportOf(browser)
-	const bar = "Address of Web Test Browser"
+	h.ready("s1", browser)
+	vp := h.showBrowser(0)
+	const bar = address1
 	h.settle("the Address Bar to hold the address of the Browser Tab shown", func() bool { return vp.address == home.Address })
 	field, ok1 := h.tt.Find(bar)
-	frames, ok2 := h.tt.Find("Web Test Browser viewport")
+	frames, ok2 := h.tt.Find(viewport1)
 	if !ok1 || !ok2 || field.Y >= frames.Y || field.Y+field.H > frames.Y+1 {
 		t.Fatalf("the Address Bar is at %+v and the frames at %+v: %q", field, frames, h.tt.Texts())
 	}
@@ -4389,8 +4634,8 @@ func TestTheViewportHasAnAddressBarAndBrowserTabs(t *testing.T) {
 	// scheme; what is typed stays while it is typed, whatever the
 	// browser lists; and the keyboard is the frames' again afterwards.
 	h.replace(bar, "example.org/docs")
-	listed := first.timesListed()
-	h.settle("the Browser Tabs to be listed while an address is typed", func() bool { return first.timesListed() >= listed+2 })
+	listed := h.backend.timesListed()
+	h.settle("the Browser Tabs to be listed while an address is typed", func() bool { return h.backend.timesListed() >= listed+2 })
 	if vp.address != "example.org/docs" {
 		t.Fatalf("while it was typed the Address Bar came to hold %q", vp.address)
 	}
@@ -4441,8 +4686,8 @@ func TestTheViewportHasAnAddressBarAndBrowserTabs(t *testing.T) {
 	// The places in the strip are as they were, whatever the browser
 	// lists first.
 	h.backend.browse(home, docs)
-	listed = second.timesListed()
-	h.settle("the Browser Tabs to be listed again", func() bool { return second.timesListed() >= listed+2 })
+	listed = h.backend.timesListed()
+	h.settle("the Browser Tabs to be listed again", func() bool { return h.backend.timesListed() >= listed+2 })
 	one, _ = h.tt.Find("Docs")
 	two, _ = h.tt.Find(cut)
 	if one.X >= two.X {
@@ -4453,16 +4698,16 @@ func TestTheViewportHasAnAddressBarAndBrowserTabs(t *testing.T) {
 	h.click("Setup")
 	h.settle("the Setup", func() bool { return h.tt.HasText("Leaves by") })
 	time.Sleep(50 * time.Millisecond)
-	listed = second.timesListed()
+	listed = h.backend.timesListed()
 	for i := 0; i < 20; i++ {
 		h.settle("a frame", func() bool { return true })
 		time.Sleep(5 * time.Millisecond)
 	}
-	if after := second.timesListed(); after > listed+1 {
+	if after := h.backend.timesListed(); after > listed+1 {
 		t.Errorf("a hidden viewport listed its Browser Tabs %d more times", after-listed)
 	}
 	h.click("Setup")
-	h.settle("the Browser Tabs to be listed once the viewport shows again", func() bool { return second.timesListed() >= listed+3 })
+	h.settle("the Browser Tabs to be listed once the viewport shows again", func() bool { return h.backend.timesListed() >= listed+3 })
 
 	// The Browser Tab shown is closed in the browser, and its stream
 	// ends: the other is shown, and nothing is said of an error.

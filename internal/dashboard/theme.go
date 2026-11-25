@@ -46,6 +46,26 @@ const (
 	windowControlsSpan = 54
 )
 
+// The least the window is, and the least a Pane is.
+const (
+	// MinWindowWidth and MinWindowHeight are the smallest the window is
+	// made, whatever its page shows.
+	MinWindowWidth  = 900
+	MinWindowHeight = 600
+	// viewportMinWidth and viewportMinHeight are the least a Pane that
+	// shows a Viewport takes, its strip included: no divider is dragged,
+	// and the window is not made smaller, so as to leave it less. paneMin
+	// is the least any other Pane takes, either way: what a divider
+	// leaves either side of itself.
+	viewportMinWidth  = 480
+	viewportMinHeight = 340
+	paneMin           = 40
+)
+
+// memoryFull is how many hundredths of its memory a sandbox has in use
+// when no Pane of it is made to show a browser any more.
+const memoryFull = 85
+
 // The measures of glyphs.
 const (
 	// glyphCell is the width of a cell of a control's glyph and of a
@@ -65,7 +85,7 @@ const (
 	sessionGlyph = 32
 	markCell     = 1
 	// stripHeight is the height of the strip over a Pane, with its name
-	// and its controls, and of the tabs over the viewports.
+	// and its controls, and of the strip of a browser's Browser Tabs.
 	stripHeight = 32
 )
 

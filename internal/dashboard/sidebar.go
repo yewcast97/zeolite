@@ -48,12 +48,14 @@ func sidebarLeast(controls float32) float32 {
 }
 
 // fitSidebar is the width the sidebar has, of the width its user dragged
-// it to, in a window this wide: no wider than sidebarShare of the
-// window, and no narrower than least, which keeps its edge clear of the
-// window's controls. Where the two cannot both hold, the controls are
-// kept clear.
-func fitSidebar(width, window, least float32) float32 {
-	return max(min(width, window*sidebarShare), least)
+// it to, in a window this wide, beside a page that needs this much
+// width: no wider than sidebarShare of the window, nor than leaves the
+// page what it needs, and no narrower than least, which keeps its edge
+// clear of the window's controls. Where these cannot all hold, the
+// controls are kept clear.
+func fitSidebar(width, window, least, page float32) float32 {
+	// The divider takes one of the window's width.
+	return max(min(width, window*sidebarShare, window-1-page), least)
 }
 
 // The sidebar's two parts, as it names them.

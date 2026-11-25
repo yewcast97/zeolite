@@ -67,8 +67,8 @@ func windowOptions(content mygo.Content) mygo.WindowOptions {
 		Title:           "zeolite",
 		Width:           1280,
 		Height:          860,
-		MinWidth:        900,
-		MinHeight:       600,
+		MinWidth:        dashboard.MinWindowWidth,
+		MinHeight:       dashboard.MinWindowHeight,
 		StateKey:        "dashboard",
 		TitleBarStyle:   mygo.TitleBarHiddenInset,
 		BackgroundColor: palette.Background,
@@ -125,6 +125,25 @@ func hideWindow(win *mygo.Window) {
 	win.SetFullScreen(false)
 }
 
+// minimumSizer makes a window no smaller than a size: the least it may be
+// from then on, and its size now where that is less. The system keeps a
+// window from being made smaller than its least, and leaves one that is
+// smaller already as it is.
+type minimumSizer interface {
+	SetMinimumSize(width, height int)
+	Size() (width, height int)
+	SetSize(width, height int)
+}
+
+// keepNoSmaller makes a window no smaller than a width and a height,
+// which the dashboard says its page needs.
+func keepNoSmaller(win minimumSizer, width, height int) {
+	win.SetMinimumSize(width, height)
+	if w, h := win.Size(); w < width || h < height {
+		win.SetSize(max(w, width), max(h, height))
+	}
+}
+
 func main() {
 	// The window is dark whatever the system's appearance is: its colors
 	// are the palette's.
@@ -163,7 +182,11 @@ func main() {
 	if err != nil {
 		log.Println("the saved sandboxes could not be read:", err)
 	}
-	board = dashboard.New(b, configs, onMain)
+	board = dashboard.New(b, configs, onMain, func(width, height int) {
+		if win != nil {
+			keepNoSmaller(win, width, height)
+		}
+	})
 	board.ShowOpening()
 
 	mygo.App.WhenReady(func() {

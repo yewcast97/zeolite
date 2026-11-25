@@ -145,6 +145,29 @@ var (
 		"#......#",
 		"########",
 	}
+	// glyphViewport is a globe: a Pane that shows a browser.
+	glyphViewport = glyph{
+		"..####..",
+		".#.##.#.",
+		"#..##..#",
+		"########",
+		"########",
+		"#..##..#",
+		".#.##.#.",
+		"..####..",
+	}
+	// glyphTerminal is a prompt, an angle and a cursor after it: New
+	// Session, a login shell in a Pane that shows none.
+	glyphTerminal = glyph{
+		"........",
+		"##......",
+		".##.....",
+		"..##....",
+		".##.....",
+		"##......",
+		"....####",
+		"........",
+	}
 	// glyphHide is an arrow up to a line: a session that goes behind its
 	// glyph in the Header.
 	glyphHide = glyph{

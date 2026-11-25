@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -24,6 +25,13 @@ type Dashboard struct {
 	// update runs a function on the main thread and draws a new frame,
 	// as mygo.Window.Update does.
 	update func(func())
+	// setMinimum makes the window no smaller than a width and a height,
+	// as the main package does, and minimum is what it was last told.
+	setMinimum func(width, height int)
+	minimum    [2]int
+	// services are the window's, taken when it is built, by which a link
+	// and what is selected in a page reach this Mac's clipboard.
+	services ui.Services
 
 	configs []sandbox.Config
 	views   map[string]*sandboxView
@@ -57,10 +65,15 @@ type Dashboard struct {
 
 // New returns a dashboard of the saved configs. update is how goroutines
 // reach the main thread: mygo.Window.Update, once the window exists.
-func New(backend Backend, configs []sandbox.Config, update func(func())) *Dashboard {
+// setMinimum is told the smallest the window may be, whenever that
+// changes: a page whose Panes show a browser needs more than
+// MinWindowWidth by MinWindowHeight.
+func New(backend Backend, configs []sandbox.Config, update func(func()), setMinimum func(width, height int)) *Dashboard {
 	d := &Dashboard{
 		backend:      backend,
 		update:       update,
+		setMinimum:   setMinimum,
+		minimum:      [2]int{MinWindowWidth, MinWindowHeight},
 		configs:      configs,
 		views:        map[string]*sandboxView{},
 		folderViews:  map[string]*sharedFolderView{},
@@ -374,6 +387,8 @@ func (d *Dashboard) stop(id string) {
 // View builds the window's interface from the state.
 func (d *Dashboard) View(c *ui.Context) {
 	c.SetTheme(windowTheme)
+	d.services = c.Services()
+	defer d.fitWindow()
 	if !d.foldersAsked {
 		d.foldersAsked = true
 		d.listSharedFolders()
@@ -393,7 +408,8 @@ func (d *Dashboard) View(c *ui.Context) {
 	// however the window was resized since: the width is written back, so
 	// that the divider stops where the sidebar does.
 	window, _ := c.Size()
-	d.sidebarWidth = fitSidebar(d.sidebarWidth, window, sidebarLeast(c.TitleBar().Left))
+	page, _ := d.panesNeed()
+	d.sidebarWidth = fitSidebar(d.sidebarWidth, window, sidebarLeast(c.TitleBar().Left), page)
 	ui.Split(c, &d.sidebarWidth, func() { d.sidebarView(c, folders) }, func() {
 		if name, ok := sharedFolderOf(d.selected); ok {
 			d.folderView(name).view(c)
@@ -415,6 +431,48 @@ func (d *Dashboard) View(c *ui.Context) {
 			d.destroy(cfg.ID)
 		}
 	}
+}
+
+// panesNeed is the least room the Panes of the page shown take, where
+// the page shows Panes: nothing otherwise.
+func (d *Dashboard) panesNeed() (width, height float32) {
+	if d.opening != nil {
+		return 0, 0
+	}
+	if v := d.views[d.selected]; v != nil && v.panesShown() {
+		return v.root.needs(nil, false)
+	}
+	return 0, 0
+}
+
+// windowNeeds is the smallest the window may be for the page it shows:
+// what stands around the Panes, as it was last laid out, and what the
+// Panes need. A page that shows no Panes, and one whose Panes were not
+// laid out yet, needs the window's own least.
+func (d *Dashboard) windowNeeds() [2]int {
+	least := [2]int{MinWindowWidth, MinWindowHeight}
+	width, height := d.panesNeed()
+	v := d.views[d.selected]
+	if width == 0 || v.room.W <= 0 || v.room.H <= 0 {
+		return least
+	}
+	// The Panes reach the window's right and lower edges: what stands
+	// around them stands left of them and over them.
+	return [2]int{
+		max(least[0], int(math.Ceil(float64(v.room.X+width)))),
+		max(least[1], int(math.Ceil(float64(v.room.Y+height)))),
+	}
+}
+
+// fitWindow tells the main package the smallest the window may be,
+// where that changed, once this build is over.
+func (d *Dashboard) fitWindow() {
+	needs := d.windowNeeds()
+	if needs == d.minimum {
+		return
+	}
+	d.minimum = needs
+	d.update(func() { d.setMinimum(needs[0], needs[1]) })
 }
 
 // see takes note of what the user looks at now, before anything of this

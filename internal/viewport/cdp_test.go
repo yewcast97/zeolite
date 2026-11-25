@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -36,8 +35,14 @@ type fakeBrowser struct {
 	// at is where its pages are in their history, whose entries have
 	// the IDs historyEntries.
 	at int
-	// opensNothing is whether it refuses to open a page.
+	// opensNothing is whether it refuses to open a page, and socket where
+	// it says its own websocket is, where that is not where it is.
 	opensNothing bool
+	socket       string
+	// behind is whether its pages stand behind another: they say so when
+	// their screencast starts, and send no frame until they are brought
+	// to the front.
+	behind bool
 	// selected is what its pages say is selected in them, and closed
 	// the IDs of the pages it was asked to close.
 	selected any
@@ -63,20 +68,16 @@ func newFakeBrowser(t *testing.T) *fakeBrowser {
 		}
 		io.WriteString(w, `[{"id":"worker1","type":"service_worker","title":"a worker","url":"https://example.com/worker.js"},{"id":"page1","type":"page","title":"Example Domain","url":"https://example.com/"},{"id":"page2","type":"page","title":"","url":"about:blank"}]`)
 	})
-	mux.HandleFunc("/json/new", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			http.Error(w, "Using unsafe HTTP verb "+r.Method+" to invoke /json/new. This action supports only PUT verb.", http.StatusMethodNotAllowed)
-			return
+	mux.HandleFunc("/json/version", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		socket := b.socket
+		b.mu.Unlock()
+		if socket == "" {
+			socket = "ws://" + r.Host + "/devtools/browser/its-own"
 		}
-		// As the browser does: what follows the question mark, unescaped
-		// once, is the address.
-		address, err := url.PathUnescape(r.URL.RawQuery)
-		if err != nil || b.opensNothing {
-			http.Error(w, "Could not create new page", http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{"id": "page3", "type": "page", "title": "", "url": address})
+		json.NewEncoder(w).Encode(map[string]any{"Browser": "Chrome/1.0", "webSocketDebuggerUrl": socket})
 	})
+	mux.Handle("/devtools/browser/its-own", websocket.Handler(b.browser))
 	mux.HandleFunc("/json/close/", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.closed = append(b.closed, strings.TrimPrefix(r.URL.Path, "/json/close/"))
@@ -93,6 +94,31 @@ func newFakeBrowser(t *testing.T) *fakeBrowser {
 func (b *fakeBrowser) dial(ctx context.Context) (io.ReadWriteCloser, error) {
 	var d net.Dialer
 	return d.DialContext(ctx, "tcp", b.server.Listener.Addr().String())
+}
+
+// browser is the browser's own websocket: it opens a page when it is
+// asked to, after saying something nobody asked for, and refuses
+// anything else.
+func (b *fakeBrowser) browser(ws *websocket.Conn) {
+	for {
+		var c command
+		if err := websocket.JSON.Receive(ws, &c); err != nil {
+			return
+		}
+		b.mu.Lock()
+		b.commands = append(b.commands, c)
+		refuses := b.opensNothing
+		b.mu.Unlock()
+		websocket.JSON.Send(ws, map[string]any{"method": "Target.targetCreated", "params": map[string]any{"targetInfo": map[string]any{"targetId": "page3"}}})
+		switch {
+		case c.Method != "Target.createTarget":
+			websocket.JSON.Send(ws, map[string]any{"id": c.ID, "error": map[string]any{"message": "'" + c.Method + "' wasn't found"}})
+		case refuses:
+			websocket.JSON.Send(ws, map[string]any{"id": c.ID, "error": map[string]any{"message": "Could not create new page"}})
+		default:
+			websocket.JSON.Send(ws, map[string]any{"id": c.ID, "result": map[string]any{"targetId": "page3"}})
+		}
+	}
 }
 
 func (b *fakeBrowser) frame(ws *websocket.Conn) {
@@ -131,8 +157,27 @@ func (b *fakeBrowser) page(ws *websocket.Conn) {
 		b.mu.Lock()
 		b.commands = append(b.commands, c)
 		b.mu.Unlock()
+		b.mu.Lock()
+		behind := b.behind
+		b.mu.Unlock()
+		visible := func(v bool) {
+			websocket.JSON.Send(ws, map[string]any{"method": "Page.screencastVisibilityChanged", "params": map[string]any{"visible": v}})
+		}
 		switch c.Method {
-		case "Page.startScreencast", "Page.screencastFrameAck":
+		case "Page.startScreencast":
+			visible(!behind)
+			if !behind {
+				b.frame(ws)
+			}
+		case "Page.screencastFrameAck":
+			if !behind {
+				b.frame(ws)
+			}
+		case "Page.bringToFront":
+			b.mu.Lock()
+			b.behind = false
+			b.mu.Unlock()
+			visible(true)
 			b.frame(ws)
 		case "Page.getNavigationHistory":
 			b.mu.Lock()
@@ -497,8 +542,8 @@ func TestStreamEnds(t *testing.T) {
 
 // The browser's pages are its Browser Tabs, in its order, with what each
 // calls itself and where it is. A stream shows the first, or the one it
-// was asked for, which is brought to the front; and it sends the one it
-// shows to an address.
+// was asked for, and brings neither to the front; and it sends the one
+// it shows to an address.
 func TestBrowserTabs(t *testing.T) {
 	b := newFakeBrowser(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -512,10 +557,7 @@ func TestBrowserTabs(t *testing.T) {
 	if first.Tab() != "page1" {
 		t.Errorf("a stream that was asked for no Browser Tab shows %q, want the first", first.Tab())
 	}
-	if _, fronted := b.command("Page.bringToFront"); fronted {
-		t.Error("a stream that was asked for no Browser Tab brought one to the front")
-	}
-	tabs, err := first.Tabs(ctx)
+	tabs, err := Tabs(ctx, b.dial, 9222)
 	want := []BrowserTab{{ID: "page1", Title: "Example Domain", Address: "https://example.com/"}, {ID: "page2", Address: "about:blank"}}
 	if err != nil || !slices.Equal(tabs, want) {
 		t.Fatalf("the Browser Tabs are %+v (%v), want %+v", tabs, err, want)
@@ -526,13 +568,17 @@ func TestBrowserTabs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	b.waitCommand("Page.bringToFront")
 	if second.Tab() != "page2" {
 		t.Errorf("a stream asked for page2 shows %q", second.Tab())
 	}
 	second.Navigate("https://example.org/next")
 	if c := b.waitCommand("Page.navigate"); c.Params["url"] != "https://example.org/next" {
 		t.Errorf("the Browser Tab was sent to %v", c.Params)
+	}
+	// The commands of a socket come in order: by now the browser has
+	// whatever the stream sent it at its start.
+	if _, fronted := b.command("Page.bringToFront"); fronted {
+		t.Error("a stream that was opened brought its Browser Tab to the front")
 	}
 
 	// An ID the browser does not list opens nothing: it is never put in
@@ -545,9 +591,60 @@ func TestBrowserTabs(t *testing.T) {
 	}
 }
 
-// A new Browser Tab is opened at an address as it is, with the escapes
-// of its own, though the browser unescapes what it is asked with; and a
-// browser that opens none is an error, in its words.
+// A Browser Tab that stands behind another in its window draws nothing:
+// its stream says that it is behind, as the browser said, and gives no
+// frame, until it is asked to bring the tab to the front.
+func TestAStreamSaysThatItsBrowserTabIsBehind(t *testing.T) {
+	b := newFakeBrowser(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seen, err := OpenCDP(ctx, b.dial, 9222, "page1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seen.Close()
+	if _, err := seen.Next(ctx); err != nil || seen.Behind() {
+		t.Fatalf("a Browser Tab in front gave its frame with %v, and is said to be behind: %v", err, seen.Behind())
+	}
+
+	b.mu.Lock()
+	b.behind = true
+	b.mu.Unlock()
+	s, err := OpenCDP(ctx, b.dial, 9222, "page2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for !s.Behind() {
+		if time.Now().After(deadline) {
+			t.Fatal("the stream of a Browser Tab behind another never said so")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	soon, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+	if _, err := s.Next(soon); err == nil {
+		t.Error("the stream of a Browser Tab behind another gave a frame")
+	}
+	stop()
+	if b.count("Page.bringToFront") != 0 {
+		t.Fatal("a Browser Tab was brought to the front unasked")
+	}
+
+	if err := s.Front(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Next(ctx); err != nil || s.Behind() {
+		t.Errorf("brought to the front, the Browser Tab gave its frame with %v, and is said to be behind: %v", err, s.Behind())
+	}
+}
+
+// A new Browser Tab is opened by the browser itself, at an address as it
+// is, with the escapes of its own, in a window of its own and in the
+// background: so it draws whatever the browser's other tabs do, and
+// takes the front of no window. A browser that opens none is an error,
+// in its words, and one that does not say where its own websocket is, is
+// asked nothing.
 func TestNewTab(t *testing.T) {
 	b := newFakeBrowser(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -556,15 +653,47 @@ func TestNewTab(t *testing.T) {
 		"https://example.com/",
 		"https://accounts.example.com/o/auth?redirect_uri=http%3A%2F%2Flocalhost%3A8085%2Fcallback&scope=a%20b+c&x=%2B#state%41",
 		"https://example.com/a b?q=你好&r=100%",
+		"about:blank",
 	} {
 		tab, err := NewTab(ctx, b.dial, 9222, address)
-		if err != nil || tab.ID != "page3" || tab.Address != address {
-			t.Errorf("a Browser Tab asked for at %q is %+v (%v)", address, tab, err)
+		if err != nil || tab != "page3" {
+			t.Errorf("a Browser Tab asked for at %q is %q (%v)", address, tab, err)
+		}
+		c := b.waitCommand("Target.createTarget")
+		if c.Params["url"] != address || c.Params["newWindow"] != true || c.Params["background"] != true || c.Params["width"] != float64(MaxFrameWidth) || c.Params["height"] != float64(MaxFrameHeight) {
+			t.Errorf("a Browser Tab at %q was asked of the browser as %v", address, c.Params)
 		}
 	}
+	if b.count("Page.bringToFront") != 0 {
+		t.Error("opening a Browser Tab brought one to the front")
+	}
+
+	b.mu.Lock()
 	b.opensNothing = true
+	b.mu.Unlock()
 	if tab, err := NewTab(ctx, b.dial, 9222, "https://example.com/"); err == nil || !strings.Contains(err.Error(), "Could not create new page") {
-		t.Errorf("a browser that opens nothing gave %+v (%v)", tab, err)
+		t.Errorf("a browser that opens nothing gave %q (%v)", tab, err)
+	}
+
+	// What the browser says of its own websocket goes into a path: one
+	// that is not its own websocket's is asked nothing.
+	asked := b.count("Target.createTarget")
+	for _, socket := range []string{"", "ws://127.0.0.1:9222/json/close/page1", "ws://127.0.0.1:9222/devtools/page/page1", "ws://127.0.0.1:9222/devtools/browser/../../json/close/page1", "ws://127.0.0.1:9222/devtools/browser/its-own?x=1", "::"} {
+		b.mu.Lock()
+		b.opensNothing, b.socket = false, socket
+		if socket == "" {
+			b.socket = "http://127.0.0.1:9222/"
+		}
+		b.mu.Unlock()
+		if tab, err := NewTab(ctx, b.dial, 9222, "https://example.com/"); err == nil {
+			t.Errorf("a browser whose own websocket is said to be at %q opened %q", socket, tab)
+		}
+	}
+	b.mu.Lock()
+	closed := len(b.closed)
+	b.mu.Unlock()
+	if b.count("Target.createTarget") != asked || closed != 0 {
+		t.Errorf("a browser that did not say where its websocket is was asked %d commands, and to close %d pages", b.count("Target.createTarget")-asked, closed)
 	}
 }
 

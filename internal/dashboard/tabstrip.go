@@ -2,11 +2,11 @@ package dashboard
 
 import "github.com/egoist/mygo/ui"
 
-// tabStrip is a strip of tabs over what they choose among: the Viewport
-// Streams of a sandbox's packs, one for each, and under it the Browser
-// Tabs of a browser that has more than one. It takes another line where
-// its tabs do not fit in one. label says what the strip is of, for
-// whoever does not see where it stands.
+// tabStrip is a strip of tabs over what they choose among: the Browser
+// Tabs of a browser that has more than one, over the Viewport that shows
+// one of them. It takes another line where its tabs do not fit in one.
+// label says what the strip is of, for whoever does not see where it
+// stands.
 func tabStrip(c *ui.Context, label string, selected *int, tabs []string) {
 	t := c.Theme()
 	ui.Row(c).Shrink(0).FillWidth().MinHeight(stripHeight).AlignItems(ui.Stretch).Font(chromeFont).Label(label).

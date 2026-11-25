@@ -30,6 +30,11 @@ type part struct {
 	stacked       bool
 	share         float32
 	key           int
+	// box is the part as the window lays it out, and room where it stood
+	// when it was last built: the room its two parts share, which says
+	// how far its divider may go.
+	box  ui.Handle
+	room ui.Rect
 }
 
 // evenShare is the share of a part's room its first part takes until its
@@ -70,6 +75,73 @@ func (t *part) extent(divided *pane, stacked bool) (across, down int) {
 	return a1 + a2, max(d1, d2)
 }
 
+// needs is the least room the part takes, were the Pane divided two,
+// stacked or side by side: as much as a Viewport takes for a Pane that
+// shows one, what a divider leaves either side of itself for any other,
+// and for two parts what both need and the line between them. With no
+// Pane divided it is what the part needs as it stands.
+func (t *part) needs(divided *pane, stacked bool) (width, height float32) {
+	if t == nil {
+		return 0, 0
+	}
+	if t.pane != nil {
+		width, height = paneMin, paneMin
+		if t.pane.viewport != nil {
+			width, height = viewportMinWidth, viewportMinHeight
+		}
+		switch {
+		case t.pane != divided:
+		case stacked:
+			height += paneMin + 1
+		default:
+			width += paneMin + 1
+		}
+		return width, height
+	}
+	w1, h1 := t.first.needs(divided, stacked)
+	w2, h2 := t.second.needs(divided, stacked)
+	if t.stacked {
+		return max(w1, w2), h1 + h2 + 1
+	}
+	return w1 + w2 + 1, max(h1, h2)
+}
+
+// fitShare is the share of a room of a length that the first of two
+// parts takes, of the share its divider was dragged to: neither part has
+// less than it needs. In a room too small for both, each has of it in
+// proportion to what it needs. A room whose length is not known yet
+// leaves the share as it is.
+func fitShare(share, length, first, second float32) float32 {
+	// The line between the parts takes one of the room's length.
+	length--
+	if length <= 0 {
+		return share
+	}
+	if first+second+2*fitSlack > length {
+		return first * 100 / (first + second)
+	}
+	// A hair more than each needs, so that what the layout makes of the
+	// share is no hair less.
+	return min(max(share, (first+fitSlack)*100/length), 100-(second+fitSlack)*100/length)
+}
+
+// fitSlack is how much more than it needs a part is left by a divider
+// that stops for it: less than a pixel of any screen.
+const fitSlack = 0.01
+
+// fit keeps the part's divider where both its parts have what they need,
+// wherever it was dragged to: the share is written back, so that the
+// divider stops there.
+func (t *part) fit() {
+	w1, h1 := t.first.needs(nil, false)
+	w2, h2 := t.second.needs(nil, false)
+	if t.stacked {
+		t.share = fitShare(t.share, t.room.H, h1, h2)
+	} else {
+		t.share = fitShare(t.share, t.room.W, w1, w2)
+	}
+}
+
 // of is the part that is a Pane, and the part it is one of two in, nil
 // for the page's own.
 func (t *part) of(p *pane) (leaf, parent *part) {
@@ -104,10 +176,14 @@ func (v *sandboxView) arrange() {
 	}
 }
 
-// What a control that adds a Pane says while it can add none.
+// What a control that adds a Pane says while it can add none: four
+// stand that way already, or the page has no room for another beside
+// the Panes that show a browser, which keep their size.
 const (
-	fullAcross = "No more than four Panes stand side by side"
-	fullDown   = "No more than four Panes stand one over another"
+	fullAcross  = "No more than four Panes stand side by side"
+	fullDown    = "No more than four Panes stand one over another"
+	tightAcross = "No room for another Pane beside this one: a Pane that shows a browser keeps its width"
+	tightDown   = "No room for another Pane below this one: a Pane that shows a browser keeps its height"
 )
 
 // cannotDivide says why a Pane cannot be divided now, stacked or side by
@@ -119,6 +195,15 @@ func (v *sandboxView) cannotDivide(p *pane, stacked bool) string {
 		return fullAcross
 	case down > maxPanesDown:
 		return fullDown
+	}
+	// The page as it was last laid out holds what its Panes would need
+	// then; one that was not laid out yet refuses nothing.
+	width, height := v.root.needs(p, stacked)
+	switch {
+	case !stacked && v.room.W > 0 && width > v.room.W:
+		return tightAcross
+	case stacked && v.room.H > 0 && height > v.room.H:
+		return tightDown
 	}
 	return ""
 }
@@ -133,7 +218,10 @@ func (v *sandboxView) divide(p *pane, stacked bool) *pane {
 	}
 	added := v.newPane()
 	v.partSeq++
-	*leaf = part{first: &part{pane: p}, second: &part{pane: added}, stacked: stacked, share: evenShare, key: v.partSeq}
+	// The two share the room the Pane had, in halves, but for what the
+	// Pane needs where it shows a browser.
+	*leaf = part{first: &part{pane: p}, second: &part{pane: added}, stacked: stacked, share: evenShare, key: v.partSeq, room: p.size}
+	leaf.fit()
 	v.arrange()
 	return added
 }
@@ -166,7 +254,13 @@ func (v *sandboxView) remove(p *pane) bool {
 	if other == leaf {
 		other = parent.second
 	}
+	// The part that stays has the room the two shared.
+	room := parent.room
 	*parent = *other
+	parent.room = room
+	if parent.pane != nil {
+		parent.pane.size = room
+	}
 	v.arrange()
 	return true
 }
@@ -184,10 +278,17 @@ func (v *sandboxView) partView(c *ui.Context, t *part, asked *func()) {
 	}
 	first := func() { v.partView(c, t.first, asked) }
 	second := func() { v.partView(c, t.second, asked) }
+	// Where the part stood in the last frame says how far its divider
+	// may go: a drag that took it further is brought back here, before
+	// anything is laid out by it.
+	if room := t.box.Bounds(c); room.W > 0 && room.H > 0 {
+		t.room = room
+	}
+	t.fit()
 	c.Key(fmt.Sprintf("part-%d", t.key))
 	if t.stacked {
-		ui.SplitVerticalPercent(c, &t.share, first, second).SplitReset(evenShare).Fill()
+		ui.SplitVerticalPercent(c, &t.share, first, second).SplitReset(evenShare).Fill().Bind(&t.box)
 	} else {
-		ui.SplitPercent(c, &t.share, first, second).SplitReset(evenShare).Fill()
+		ui.SplitPercent(c, &t.share, first, second).SplitReset(evenShare).Fill().Bind(&t.box)
 	}
 }

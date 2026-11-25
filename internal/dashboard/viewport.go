@@ -22,15 +22,6 @@ func (v *sandboxView) daemonReady(name string) bool {
 	return false
 }
 
-func (v *sandboxView) viewportOf(m pack.Manifest) *viewportView {
-	vp := v.viewports[m.Name]
-	if vp == nil {
-		vp = &viewportView{sv: v, pack: m, shown: make(chan struct{}, 1), listed: make(chan struct{}, 1)}
-		v.viewports[m.Name] = vp
-	}
-	return vp
-}
-
 // tabsEvery is how long after a browser's Browser Tabs were listed, and
 // the listing was built into a frame of the window, they are listed
 // again; browserPatience bounds one question to the browser, a listing
@@ -45,12 +36,16 @@ const (
 	inputBacklog    = 256
 )
 
-// viewportView shows one Viewport Stream and sends it the pointer and
-// the keyboard. Over a browser's it has the Address Bar, with Back and
-// Forward beside it, and over that the strip of the browser's Browser
-// Tabs where it has more than one.
+// viewportView is a Viewport: what a Pane shows in the place of a
+// Terminal Session. It shows one Viewport Stream and sends it the
+// pointer and the keyboard. Over a browser's it has the Address Bar,
+// with Back and Forward beside it, and over that the strip of the
+// browser's Browser Tabs where it has more than one.
 type viewportView struct {
-	sv   *sandboxView
+	sv *sandboxView
+	// b is the browser whose Browser Tab the Viewport shows, which lists
+	// its Browser Tabs for every Viewport of it, and pack the browser's.
+	b    *browser
 	pack pack.Manifest
 
 	opening bool
@@ -70,18 +65,19 @@ type viewportView struct {
 	boxW, boxH float32
 	// shown is signalled by each build of the view: the stream is asked
 	// for its next frame only after the one before was built into a
-	// frame of the window, so a viewport nobody sees asks for nothing.
-	// listed is the same for the listing of the Browser Tabs.
-	shown  chan struct{}
-	listed chan struct{}
+	// frame of the window, so a Viewport nobody sees asks for nothing.
+	shown chan struct{}
 
-	// tabs are the browser's Browser Tabs, each where the viewport first
-	// saw it; tab is the ID of the one shown, empty for the browser's
-	// first; and chosen is the strip's chosen tab, which is another than
-	// the one shown once its user chose it.
-	tabs   []viewport.BrowserTab
-	tab    string
-	chosen int
+	// tab is the ID of the Browser Tab shown, empty while there is none
+	// yet; and chosen is the strip's chosen tab, which is another than
+	// the one shown once its user chose it. choosing is whether the
+	// Viewport waits for the browser to be listed, to take a Browser Tab
+	// that no other Viewport shows: a listing later than since, the
+	// number of them when it began to wait.
+	tab      string
+	chosen   int
+	choosing bool
+	since    int
 	// address is what the Address Bar holds: the address of the Browser
 	// Tab shown, or what is typed there while the bar has the keyboard.
 	// bar is the bar's field, and frames the box that shows the frames,
@@ -99,9 +95,6 @@ type viewportView struct {
 	// closing is the stream whose Browser Tab the browser is being asked
 	// to close.
 	closing ViewportStream
-	// services are the window's, by which the Edit menu's commands
-	// reach this Mac's clipboard.
-	services ui.Services
 	// caretX and caretY are where the pointer was last pressed on the
 	// frames, in their box: what an input method composes shows there,
 	// the page's own caret being the page's to know.
@@ -118,8 +111,32 @@ func (vp *viewportView) close() {
 	vp.stream, vp.cancel, vp.opening = nil, nil, false
 }
 
+// live is whether a Pane still shows the Viewport: not once its Pane
+// closed, took a session, or went with its sandbox.
+func (vp *viewportView) live() bool { return vp.sv.paneOfViewport(vp) != nil }
+
+// choose has the Viewport take a Browser Tab once the browser is listed
+// anew: the first that no other Viewport shows, or a new one.
+func (vp *viewportView) choose() {
+	vp.close()
+	vp.tab, vp.choosing, vp.since = "", true, vp.b.listings
+	vp.b.hurry()
+}
+
+// pick takes the first of the browser's Browser Tabs that no other
+// Viewport shows. Where every one is shown, a blank one is opened for
+// it, and the keyboard goes to the Address Bar, for where it is to go.
+func (vp *viewportView) pick() {
+	vp.choosing = false
+	if tab := vp.b.free(""); tab != "" {
+		vp.tab = tab
+		return
+	}
+	vp.openTab(blankAddress, true, nil)
+}
+
 // open opens the stream, on the Browser Tab that is to be shown, and
-// feeds its frames and the browser's Browser Tabs to the view.
+// feeds its frames to the view.
 func (vp *viewportView) open() {
 	vp.opening, vp.err = true, ""
 	d, id, tab := vp.sv.d, vp.sv.id, vp.tab
@@ -131,8 +148,8 @@ func (vp *viewportView) open() {
 		stream, err := d.backend.OpenViewport(id, vp.pack, tab)
 		if err != nil {
 			d.update(func() {
-				// Closed since, it has nothing to say. Otherwise the
-				// browser's first Browser Tab is the next to try.
+				// Closed since, it has nothing to say. Otherwise another
+				// Browser Tab is the next to try.
 				if ctx.Err() == nil {
 					vp.opening, vp.err, vp.tab = false, err.Error(), ""
 					vp.chosen = vp.shownIndex()
@@ -148,7 +165,6 @@ func (vp *viewportView) open() {
 			vp.stream, vp.tab = stream, stream.Tab()
 			vp.chosen = vp.shownIndex()
 		})
-		go vp.listTabs(ctx, stream)
 		go func() {
 			for {
 				select {
@@ -168,14 +184,14 @@ func (vp *viewportView) open() {
 					}
 					vp.close()
 					// A Browser Tab that was closed takes its stream with
-					// it: where the browser has another, that one is
-					// shown.
-					for _, other := range vp.tabs {
-						if other.ID != vp.tab {
-							vp.tabs = []viewport.BrowserTab{other}
-							vp.tab, vp.chosen = other.ID, 0
-							return
-						}
+					// it: where the browser has another that no Viewport
+					// shows, that one is shown.
+					gone := vp.tab
+					vp.tab = ""
+					if other := vp.b.free(gone); other != "" {
+						vp.tab = other
+						vp.chosen = vp.shownIndex()
+						return
 					}
 					vp.err = "The stream ended: " + err.Error()
 				})
@@ -197,82 +213,10 @@ func (vp *viewportView) open() {
 	}()
 }
 
-// listTabs lists the browser's Browser Tabs for the view until ctx
-// ends: again a moment after each listing was built into a frame of the
-// window, so that a viewport nobody sees asks for nothing.
-func (vp *viewportView) listTabs(ctx context.Context, stream ViewportStream) {
-	d := vp.sv.d
-	for {
-		listing, cancel := context.WithTimeout(ctx, browserPatience)
-		tabs, err := stream.Tabs(listing)
-		cancel()
-		if ctx.Err() != nil {
-			return
-		}
-		// Forget builds from before this listing, then wait for the one
-		// that shows it.
-		select {
-		case <-vp.listed:
-		default:
-		}
-		d.update(func() {
-			// A listing that failed leaves the one before: the stream
-			// says so itself when the browser is gone.
-			if err == nil && vp.stream == stream {
-				vp.list(tabs)
-			}
-		})
-		select {
-		case <-vp.listed:
-		case <-ctx.Done():
-			return
-		}
-		select {
-		case <-time.After(tabsEvery):
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// list takes the browser's Browser Tabs as it lists them now. Each
-// keeps the place the viewport first saw it at, and a new one comes
-// last: the browser itself lists the one last used first. A tab its
-// user chose and the view has not acted on yet stays chosen.
-func (vp *viewportView) list(tabs []viewport.BrowserTab) {
-	wanted := ""
-	if vp.chosen != vp.shownIndex() && vp.chosen >= 0 && vp.chosen < len(vp.tabs) {
-		wanted = vp.tabs[vp.chosen].ID
-	}
-	now := make(map[string]viewport.BrowserTab, len(tabs))
-	for _, tab := range tabs {
-		now[tab.ID] = tab
-	}
-	var kept []viewport.BrowserTab
-	for _, tab := range vp.tabs {
-		if latest, there := now[tab.ID]; there {
-			kept = append(kept, latest)
-			delete(now, tab.ID)
-		}
-	}
-	for _, tab := range tabs {
-		if _, unseen := now[tab.ID]; unseen {
-			kept = append(kept, tab)
-		}
-	}
-	vp.tabs = kept
-	vp.chosen = vp.shownIndex()
-	for i, tab := range vp.tabs {
-		if tab.ID == wanted {
-			vp.chosen = i
-		}
-	}
-}
-
 // shownIndex is where the Browser Tab shown stands among the Browser
 // Tabs: first, while it is not among them.
 func (vp *viewportView) shownIndex() int {
-	for i, tab := range vp.tabs {
+	for i, tab := range vp.b.tabs {
 		if tab.ID == vp.tab {
 			return i
 		}
@@ -285,7 +229,7 @@ func (vp *viewportView) shownIndex() int {
 // otherwise what the browser last listed.
 func (vp *viewportView) shownAddress() string {
 	listed := ""
-	for _, tab := range vp.tabs {
+	for _, tab := range vp.b.tabs {
 		if tab.ID == vp.tab {
 			listed = tab.Address
 		}
@@ -297,25 +241,49 @@ func (vp *viewportView) shownAddress() string {
 	return listed
 }
 
-// openLink takes a link that the sandbox's user Command-clicked in a
-// Pane, and reports whether it did: a web address, where the sandbox has
-// a browser, which opens it in a new Browser Tab, shown at once. So an
-// agent's link to sign in is opened where its answer is waited for. The
+// openLink takes a link that the sandbox's user Command-clicked in the
+// session's Pane, and always reports that it did: nothing on this Mac
+// opens a link a session printed. A web address, where the sandbox has
+// a browser, opens in a new Browser Tab of that browser: in the first
+// Pane that shows the browser, or in a Pane that is added for it beside
+// the one that was clicked in, or below it, where a Viewport has room
+// there. So an agent's link to sign in is opened where its answer is
+// waited for. Anything else that was clicked, and a web address that no
+// Pane can show, goes to this Mac's clipboard and nowhere else. The
 // address is the session's word, the one thing a click takes of what a
-// session printed: it goes to that browser and is kept nowhere. A link
-// that is left, the terminal opens with this Mac's.
-func (v *sandboxView) openLink(link string) bool {
-	if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
-		return false
-	}
-	for i, m := range v.streamPacks() {
-		if m.ViewportStream.Type == pack.StreamCDP {
-			v.viewportTab = i
-			v.viewportOf(m).openTab(link, false, nil)
+// session printed.
+func (s *session) openLink(link string) bool {
+	v := s.sv
+	from := v.paneOf(s)
+	web := strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://")
+	if b := v.linkBrowser(); web && b != nil && from != nil {
+		if shown := b.views(); len(shown) > 0 {
+			shown[0].openTab(link, false, nil)
+			return true
+		}
+		if added := v.divideFor(from); added != nil {
+			v.newViewport(added, b.pack).openTab(link, false, nil)
 			return true
 		}
 	}
-	return false
+	v.copyLink(from, link)
+	return true
+}
+
+// divideFor adds a Pane for a Viewport beside a Pane, or below it,
+// where the half it would have is as large as a Viewport takes: nil
+// where neither is, or the Pane cannot be divided.
+func (v *sandboxView) divideFor(p *pane) *pane {
+	half := func(length float32) float32 { return (length - 1) / 2 }
+	if half(p.size.W) >= viewportMinWidth && p.size.H >= viewportMinHeight {
+		if added := v.divide(p, false); added != nil {
+			return added
+		}
+	}
+	if p.size.W >= viewportMinWidth && half(p.size.H) >= viewportMinHeight {
+		return v.divide(p, true)
+	}
+	return nil
 }
 
 // blankAddress is where a new Browser Tab is that was sent nowhere yet.
@@ -332,8 +300,9 @@ func (vp *viewportView) openTab(address string, typing bool, then func(shown boo
 	go func() {
 		tab, err := d.backend.OpenBrowserTab(id, vp.pack, address)
 		d.update(func() {
-			// The sandbox stopped meanwhile: its viewports are gone.
-			if sv.viewports[vp.pack.Name] != vp {
+			// The sandbox stopped meanwhile, or its Pane shows something
+			// else by now: the Viewport is gone.
+			if !vp.live() {
 				return
 			}
 			if err != nil {
@@ -341,6 +310,8 @@ func (vp *viewportView) openTab(address string, typing bool, then func(shown boo
 			} else {
 				vp.err = ""
 				vp.switchTo(tab)
+				// The browser lists it from now on.
+				vp.b.hurry()
 				if typing {
 					vp.toBar, vp.address = true, ""
 				}
@@ -422,7 +393,8 @@ func asked(question func(context.Context)) {
 // is the page's word, and goes nowhere else. Where the page says that
 // nothing is selected, the clipboard stays as it is.
 func (vp *viewportView) copy(cut bool) {
-	stream, d, services := vp.stream, vp.sv.d, vp.services
+	stream, d := vp.stream, vp.sv.d
+	services := d.services
 	vp.send(func() {
 		asked(func(ctx context.Context) {
 			text, err := stream.Selection(ctx)
@@ -438,8 +410,9 @@ func (vp *viewportView) copy(cut bool) {
 }
 
 // closeTab closes the Browser Tab shown. Its stream ends with it, and
-// the view shows another. The browser's last gives way to a blank one,
-// which is opened and shown first, as New Browser Tab's is: a browser
+// the view shows another, that no other Viewport shows. Where there is
+// none, as when it is the browser's last, it gives way to a blank one,
+// which is opened and shown first, as New Browser Tab's is: a Viewport
 // is never left with none, which shows nothing. A Browser Tab is asked
 // to close once, however often its user asks.
 func (vp *viewportView) closeTab() {
@@ -448,7 +421,7 @@ func (vp *viewportView) closeTab() {
 		return
 	}
 	vp.closing = stream
-	if len(vp.tabs) > 1 {
+	if vp.b.free(vp.tab) != "" {
 		if !vp.send(func() { vp.closeTabOf(stream) }) {
 			vp.closing = nil
 		}
@@ -485,8 +458,8 @@ func (vp *viewportView) closeTabOf(stream ViewportStream) {
 // tabTitles are what the strip's tabs say: each Browser Tab's own
 // title, or its address where it has none, cut to a tab's length.
 func (vp *viewportView) tabTitles() []string {
-	titles := make([]string, len(vp.tabs))
-	for i, tab := range vp.tabs {
+	titles := make([]string, len(vp.b.tabs))
+	for i, tab := range vp.b.tabs {
 		title := tab.Title
 		if title == "" {
 			title = tab.Address
@@ -592,6 +565,12 @@ func (vp *viewportView) handle(ev ui.InputEvent) bool {
 		send = func() { stream.Pointer(viewport.PointerMoved, x, y, ev.Button, 0, mods) }
 	case ui.InputPointerDown:
 		vp.caretX, vp.caretY = ev.X, ev.Y
+		// A press on the frames of a Browser Tab that stands behind
+		// another brings it forward, and is no press in its page.
+		if stream.Behind() {
+			vp.send(func() { stream.Front() })
+			return true
+		}
 		send = func() { stream.Pointer(viewport.PointerPressed, x, y, ev.Button, max(1, ev.Clicks), mods) }
 	case ui.InputPointerUp:
 		send = func() { stream.Pointer(viewport.PointerReleased, x, y, ev.Button, max(1, ev.Clicks), mods) }
@@ -609,7 +588,7 @@ func (vp *viewportView) handle(ev ui.InputEvent) bool {
 			vp.copy(ev.Text == "cut")
 			return true
 		case ev.Text == "paste":
-			text := vp.services.ReadClipboard()
+			text := vp.sv.d.services.ReadClipboard()
 			if text == "" {
 				return true
 			}
@@ -643,79 +622,107 @@ func (vp *viewportView) handle(ev ui.InputEvent) bool {
 	return true
 }
 
-func (vp *viewportView) view(c *ui.Context) {
+// behindSays is what a Viewport says while its Browser Tab stands
+// behind another in the browser's window, where it draws nothing.
+const behindSays = "Behind another Browser Tab: click to bring it forward"
+
+// view is the Viewport of the Pane called name, under the Pane's strip.
+func (vp *viewportView) view(c *ui.Context, name string) {
 	t := c.Theme()
-	vp.services = c.Services()
 	// This build shows whatever frame the bitmap holds, and whatever
-	// Browser Tabs were last listed.
-	for _, built := range []chan struct{}{vp.shown, vp.listed} {
-		select {
-		case built <- struct{}{}:
-		default:
-		}
+	// Browser Tabs the browser last listed.
+	select {
+	case vp.shown <- struct{}{}:
+	default:
 	}
+	vp.b.seen()
 	if vp.err != "" {
-		ui.Column(c).Grow(1).Center().Gap(t.Space(2)).Children(func() {
+		ui.Column(c).Grow(1).FillWidth().Center().Gap(t.Space(2)).Padding(t.Space(3)).Children(func() {
 			ui.Text(c, vp.err).TextColor(t.Danger)
 			if ui.Button(c, "Try Again").Key("viewport-retry").Clicked() {
 				vp.err = ""
+				// A Viewport that was left with no Browser Tab takes
+				// another.
+				if vp.tab == "" {
+					vp.choose()
+				}
 			}
 		})
 		return
 	}
-	// The strip's tab that its user chose is the Browser Tab to show.
-	if vp.chosen != vp.shownIndex() && vp.chosen >= 0 && vp.chosen < len(vp.tabs) {
-		vp.switchTo(vp.tabs[vp.chosen].ID)
+	// The strip's tab that its user chose is the Browser Tab to show. One
+	// that another Pane shows changes places with this one's: no two
+	// Panes show one Browser Tab.
+	if tabs := vp.b.tabs; vp.chosen != vp.shownIndex() && vp.chosen >= 0 && vp.chosen < len(tabs) {
+		want := tabs[vp.chosen].ID
+		if other := vp.b.shownBy(want, vp); other != nil {
+			vp.chosen = vp.shownIndex()
+			sv := vp.sv
+			sv.d.update(func() { sv.changePlaces(vp, other) })
+		} else {
+			vp.switchTo(want)
+		}
 	}
-	waiting := vp.stream == nil && !vp.opening
-	if waiting && vp.sv.daemonReady(vp.pack.Name) {
+	ready := vp.sv.daemonReady(vp.pack.Name)
+	if vp.stream == nil && !vp.opening && ready && vp.tab != "" {
 		vp.open()
 	}
 	switch {
 	case vp.bitmap != nil:
-	case waiting:
+	case !ready:
 		vp.sv.note(c, "Waiting for "+vp.pack.Title+" to be ready…")
 		return
 	default:
 		vp.sv.note(c, "Connecting to "+vp.pack.Title+"…")
 		return
 	}
-	if len(vp.tabs) > 1 {
-		tabStrip(c, "Browser Tabs of "+vp.pack.Title, &vp.chosen, vp.tabTitles())
+	if len(vp.b.tabs) > 1 {
+		tabStrip(c, "Browser Tabs of "+name, &vp.chosen, vp.tabTitles())
 	}
 	// The Address Bar follows the Browser Tab shown, but while something
-	// is typed there.
-	if !vp.bar.Focused(c) {
+	// is typed there, and while it waits for the keyboard, emptied for
+	// where a new Browser Tab is to go.
+	if !vp.bar.Focused(c) && !vp.toBar {
 		vp.address = vp.shownAddress()
 	}
+	in := func(label string) string { return label + " in " + name }
 	// The row is the same one whether or not a strip stands over it: the
 	// Address Bar keeps the keyboard when the browser's second Browser
 	// Tab comes.
 	ui.Row(c).Key("viewport-bar").Shrink(0).FillWidth().MinHeight(stripHeight).AlignItems(ui.Center).Gap(t.Space(1)).Padding(t.Space(1), t.Space(2)).Font(chromeFont).
 		Background(panelTheme.Background).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-		if glyphButton(c, "viewport-back-"+vp.pack.Name, glyphBack, backLabel).Clicked() {
+		if glyphButtonIn(c, "viewport-back", glyphBack, in(backLabel), backLabel, t.Text).Clicked() {
 			vp.along(ViewportStream.Back)
 		}
-		if glyphButton(c, "viewport-forward-"+vp.pack.Name, glyphForward, forwardLabel).Clicked() {
+		if glyphButtonIn(c, "viewport-forward", glyphForward, in(forwardLabel), forwardLabel, t.Text).Clicked() {
 			vp.along(ViewportStream.Forward)
 		}
-		c.Key("viewport-address-" + vp.pack.Name)
-		ui.TextInput(c, &vp.address).Label("Address of " + vp.pack.Title).Placeholder("Address").FontSize(textSmall).Grow(1).
+		c.Key("viewport-address")
+		ui.TextInput(c, &vp.address).Label("Address of " + name).Placeholder("Address").FontSize(textSmall).Grow(1).Shrink(1).MinWidth(0).
 			Bind(&vp.bar).OnSubmit(func() { vp.navigate(c) })
 		if vp.toBar {
 			vp.toBar = false
 			vp.bar.Focus(c)
 		}
-		if glyphButton(c, "viewport-new-tab-"+vp.pack.Name, glyphAdd, newTabLabel).Clicked() {
+		if glyphButtonIn(c, "viewport-new-tab", glyphAdd, in(newTabLabel), newTabLabel, t.Text).Clicked() {
 			vp.openTab(blankAddress, true, nil)
 		}
-		if glyphButton(c, "viewport-close-tab-"+vp.pack.Name, glyphClose, closeTabLabel).Clicked() {
+		if glyphButtonIn(c, "viewport-close-tab", glyphClose, in(closeTabLabel), closeTabLabel, t.Text).Clicked() {
 			vp.closeTab()
 		}
 	})
+	// A Browser Tab that stands behind another draws nothing: the frame
+	// it last drew stays, and a line says why it stands still.
+	behind := vp.stream != nil && vp.stream.Behind()
+	if behind {
+		ui.Row(c).Key("viewport-behind").Shrink(0).FillWidth().Padding(t.Space(1), t.Space(2)).Font(chromeFont).Background(panelTheme.Background).
+			BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+			ui.Text(c, behindSays).FontSize(textSmall).TextColor(t.Warning).MaxLines(1)
+		})
+	}
 	// The frames take text: the window gives what is typed, and what an
 	// input method composes, only to what says that it does.
-	ui.Box(c).Grow(1).FillWidth().Key("viewport").Label(vp.pack.Title + " viewport").Focusable().Bind(&vp.frames).
+	ui.Box(c).Grow(1).FillWidth().Key("viewport").Label("Viewport of " + name).Focusable().Bind(&vp.frames).
 		Background(t.Background).
 		Draw(func(_ *ui.Painter, r ui.Rect) { vp.boxW, vp.boxH = r.W, r.H }).
 		HandleInput(vp.handle).

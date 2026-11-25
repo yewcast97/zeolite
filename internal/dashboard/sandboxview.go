@@ -38,13 +38,10 @@ type sandboxView struct {
 	errs  []sandbox.FieldError
 	saved bool
 
-	// The Sandbox Terminal: the Panes, under the tabs of the packs'
-	// viewports where the sandbox has any.
-	// viewportsShare is the percentage of the page's height that the
-	// viewports over the Panes take.
-	viewportsShare float32
-	viewportTab    int
-	viewports      map[string]*viewportView
+	// The Sandbox Terminal: the Panes. browsers are the browsers of the
+	// sandbox's packs that a Pane showed since the sandbox started, by
+	// their packs' names.
+	browsers map[string]*browser
 	// sessions are the sandbox's Terminal Sessions, in the order they
 	// were opened. root is the page's one part while the sandbox runs: a
 	// Pane, or what a Pane was divided into. panes are its Panes in the
@@ -59,6 +56,9 @@ type sandboxView struct {
 	// keyboard is the Pane the keyboard was in when the Panes were last
 	// built, nil where it was in none.
 	keyboard *pane
+	// room is where the Panes stood in the window when they were last
+	// built: the page under its Header and beside the sidebar.
+	room ui.Rect
 	// lived counts the times the sandbox's sessions were closed with
 	// it: a shell that was being started meanwhile is not shown.
 	lived int
@@ -69,14 +69,13 @@ type sandboxView struct {
 
 func newSandboxView(d *Dashboard, cfg sandbox.Config) *sandboxView {
 	return &sandboxView{
-		d:              d,
-		id:             cfg.ID,
-		status:         sandbox.Status{State: sandbox.StateStopped},
-		running:        cfg,
-		seenExits:      map[string][]string{},
-		draft:          newDraft(cfg, d.backend.Packs()),
-		viewportsShare: 55,
-		viewports:      map[string]*viewportView{},
+		d:         d,
+		id:        cfg.ID,
+		status:    sandbox.Status{State: sandbox.StateStopped},
+		running:   cfg,
+		seenExits: map[string][]string{},
+		draft:     newDraft(cfg, d.backend.Packs()),
+		browsers:  map[string]*browser{},
 	}
 }
 
@@ -140,17 +139,19 @@ func (v *sandboxView) see() {
 }
 
 // closeLive ends what the sandbox's workstation was showing, as when it
-// stops: its Terminal Sessions, with their Panes, and its Viewport
-// Streams.
+// stops: its Viewport Streams and its Terminal Sessions, with their
+// Panes.
 func (v *sandboxView) closeLive() {
+	for _, p := range v.panes {
+		p.leaveViewport()
+	}
+	for _, b := range v.browsers {
+		b.close()
+	}
+	v.browsers = map[string]*browser{}
 	v.closeSessions()
 	v.showCalls = false
 	v.ended = false
-	for _, vp := range v.viewports {
-		vp.close()
-	}
-	v.viewports = map[string]*viewportView{}
-	v.viewportTab = 0
 }
 
 // mcpCallsLabel is what the Header's control that lists the MCP calls is

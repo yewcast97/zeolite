@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/net/websocket"
 )
@@ -70,6 +71,9 @@ type Stream struct {
 	// unacked is the frame last returned by Next. The browser sends the
 	// one after it only once this one is acknowledged.
 	unacked int
+	// behind is whether the browser last said that the Browser Tab is not
+	// to be seen: another stands in front of it in its window.
+	behind atomic.Bool
 }
 
 // answer is what the browser says to a command: its result, or why it
@@ -99,11 +103,13 @@ const (
 )
 
 // OpenCDP starts the screencast of one of the browser's Browser Tabs:
-// the one whose ID is tab, which is brought to the front, or the first
-// the browser lists where tab is empty. port is the browser's debugging
-// port as the browser itself knows it.
+// the one whose ID is tab, or the first the browser lists where tab is
+// empty. It brings no Browser Tab to the front: one that stands behind
+// another in its window draws nothing, which Behind says, until Front
+// is asked for. port is the browser's debugging port as the browser
+// itself knows it.
 func OpenCDP(ctx context.Context, dial Dial, port int, tab string) (*Stream, error) {
-	host := fmt.Sprintf("127.0.0.1:%d", port)
+	host := browserHost(port)
 	tabs, err := browserTabs(ctx, dial, host)
 	if err != nil {
 		return nil, err
@@ -111,8 +117,8 @@ func OpenCDP(ctx context.Context, dial Dial, port int, tab string) (*Stream, err
 	if len(tabs) == 0 {
 		return nil, errors.New("the browser has no page open")
 	}
-	page, chosen := tabs[0].ID, tab != ""
-	if chosen {
+	page := tabs[0].ID
+	if tab != "" {
 		// The ID goes into a path: it is one the browser listed, or none.
 		if !slices.ContainsFunc(tabs, func(t BrowserTab) bool { return t.ID == tab }) {
 			return nil, errors.New("the browser no longer has that Browser Tab")
@@ -137,13 +143,6 @@ func OpenCDP(ctx context.Context, dial Dial, port int, tab string) (*Stream, err
 	}
 	s := &Stream{dial: dial, host: host, tab: page, ws: ws, frames: make(chan screencastFrame, 4), done: make(chan struct{}), asked: map[int]chan answer{}}
 	go s.read()
-	if chosen {
-		// A Browser Tab behind another draws nothing.
-		if err := s.send("Page.bringToFront", map[string]any{}); err != nil {
-			s.Close()
-			return nil, err
-		}
-	}
 	err = s.send("Page.startScreencast", map[string]any{
 		"format":        "jpeg",
 		"quality":       jpegQuality,
@@ -161,11 +160,26 @@ func OpenCDP(ctx context.Context, dial Dial, port int, tab string) (*Stream, err
 // Tab is the ID of the Browser Tab the stream shows.
 func (s *Stream) Tab() string { return s.tab }
 
-// Tabs lists the browser's Browser Tabs, in the browser's order, on a
-// connection of its own.
-func (s *Stream) Tabs(ctx context.Context) ([]BrowserTab, error) {
-	return browserTabs(ctx, s.dial, s.host)
+// Behind is whether the Browser Tab the stream shows stands behind
+// another in its window, as the browser last said: it draws nothing
+// there, and the stream gives no frame until it is in front again.
+func (s *Stream) Behind() bool { return s.behind.Load() }
+
+// Front brings the Browser Tab the stream shows to the front of its
+// window, which is from then on the window a Browser Tab that is opened
+// with no window of its own comes to the front of.
+func (s *Stream) Front() error { return s.send("Page.bringToFront", map[string]any{}) }
+
+// Tabs lists a browser's Browser Tabs, in the browser's order: the one
+// last used first. port is the browser's debugging port as the browser
+// itself knows it.
+func Tabs(ctx context.Context, dial Dial, port int) ([]BrowserTab, error) {
+	return browserTabs(ctx, dial, browserHost(port))
 }
+
+// browserHost is the host a browser is asked under: its own loopback
+// address, the only one it answers to, with its debugging port.
+func browserHost(port int) string { return fmt.Sprintf("127.0.0.1:%d", port) }
 
 // Navigate sends the Browser Tab the stream shows to an address.
 func (s *Stream) Navigate(address string) error {
@@ -234,23 +248,98 @@ func Address(typed string) string {
 	return "https://" + typed
 }
 
+// The size of the window a new Browser Tab is given: the largest frame
+// a stream asks for, so that its frames are the size of its page.
+const (
+	tabWindowWidth  = MaxFrameWidth
+	tabWindowHeight = MaxFrameHeight
+)
+
 // NewTab opens a new Browser Tab at an address in the browser, and
-// returns it as the browser has it. port is the browser's debugging port
-// as the browser itself knows it.
-func NewTab(ctx context.Context, dial Dial, port int, address string) (BrowserTab, error) {
-	// The browser unescapes what follows the question mark, once, and
-	// takes that for the address: escaped, an address arrives as it is,
-	// with the escapes of its own. A space is escaped as one, the
-	// browser taking no plus sign for it.
-	escaped := strings.ReplaceAll(url.QueryEscape(address), "+", "%20")
-	var t target
-	if err := askBrowser(ctx, dial, fmt.Sprintf("127.0.0.1:%d", port), http.MethodPut, "/json/new?"+escaped, &t); err != nil {
-		return BrowserTab{}, fmt.Errorf("opening a Browser Tab: %w", err)
+// returns its ID. The tab has a window of its own, in the background: a
+// browser draws the front tab of each of its windows and no other, so
+// that each tab opened here draws whatever the others do, and it takes
+// the front of no window from the tab that has it. port is the browser's
+// debugging port as the browser itself knows it.
+func NewTab(ctx context.Context, dial Dial, port int, address string) (string, error) {
+	var opened struct {
+		TargetID string `json:"targetId"`
 	}
-	if t.Type != "page" || t.ID == "" {
-		return BrowserTab{}, errors.New("opening a Browser Tab: the browser opened none")
+	err := commandBrowser(ctx, dial, browserHost(port), "Target.createTarget", map[string]any{
+		"url":        address,
+		"newWindow":  true,
+		"background": true,
+		"width":      tabWindowWidth,
+		"height":     tabWindowHeight,
+	}, &opened)
+	if err != nil {
+		return "", fmt.Errorf("opening a Browser Tab: %w", err)
 	}
-	return BrowserTab{ID: t.ID, Title: t.Title, Address: t.URL}, nil
+	if opened.TargetID == "" {
+		return "", errors.New("opening a Browser Tab: the browser opened none")
+	}
+	return opened.TargetID, nil
+}
+
+// browserSocket is the path under which a browser's own websocket is
+// reached, which is no page's: what the browser says of itself names it.
+const browserSocket = "/devtools/browser/"
+
+// commandBrowser has the browser itself do one command, which is no
+// page's to do, on a connection of its own, and reads the browser's
+// answer into result. It waits for the answer as long as ctx lasts.
+func commandBrowser(ctx context.Context, dial Dial, host, method string, params, result any) error {
+	var version struct {
+		Socket string `json:"webSocketDebuggerUrl"`
+	}
+	if err := askBrowser(ctx, dial, host, http.MethodGet, "/json/version", &version); err != nil {
+		return err
+	}
+	// The browser's word goes into a path: it is its own websocket's, or
+	// nothing is asked there.
+	at, err := url.Parse(version.Socket)
+	if err != nil || !strings.HasPrefix(at.Path, browserSocket) || strings.Contains(at.Path, "..") || at.RawQuery != "" {
+		return errors.New("the browser did not say where it takes commands")
+	}
+	conn, err := dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	config, err := websocket.NewConfig("ws://"+host+at.Path, "http://"+host)
+	if err != nil {
+		return err
+	}
+	ws, err := websocket.NewClient(config, conn)
+	if err != nil {
+		return fmt.Errorf("connecting to the browser: %w", err)
+	}
+	const id = 1
+	if err := websocket.JSON.Send(ws, map[string]any{"id": id, "method": method, "params": params}); err != nil {
+		return err
+	}
+	for {
+		var msg struct {
+			ID int `json:"id"`
+			answer
+		}
+		if err := websocket.JSON.Receive(ws, &msg); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		// What the browser says unasked meanwhile is nobody's here.
+		if msg.ID != id {
+			continue
+		}
+		if msg.Error != nil {
+			return fmt.Errorf("%s: %s", method, msg.Error.Message)
+		}
+		return json.Unmarshal(msg.Result, result)
+	}
 }
 
 // target is one of the things a browser has open, a page among them, as
@@ -383,6 +472,15 @@ func (s *Stream) read() {
 			s.asking.Unlock()
 			if to != nil {
 				to <- msg.answer
+			}
+			continue
+		}
+		if msg.Method == "Page.screencastVisibilityChanged" {
+			var said struct {
+				Visible bool `json:"visible"`
+			}
+			if json.Unmarshal(msg.Params, &said) == nil {
+				s.behind.Store(!said.Visible)
 			}
 			continue
 		}

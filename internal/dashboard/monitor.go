@@ -12,10 +12,9 @@ import (
 )
 
 // terminalView is the Sandbox Terminal, the page of a running sandbox
-// under its Header: its Panes, or its MCP calls in their place, under
-// the tabs of its packs' viewports where it has any. While the sandbox
-// starts it shows the glyph of its state, and says in a line what it
-// waits for.
+// under its Header: its Panes, or its MCP calls in their place. While
+// the sandbox starts it shows the glyph of its state, and says in a line
+// what it waits for.
 func (v *sandboxView) terminalView(c *ui.Context) {
 	t := c.Theme()
 	if !running(v.status.State) {
@@ -29,21 +28,12 @@ func (v *sandboxView) terminalView(c *ui.Context) {
 		})
 		return
 	}
-	body := func() {
+	ui.Column(c).Grow(1).FillWidth().BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
 		if v.showCalls {
 			v.mcpCallsView(c)
 		} else {
 			v.panesView(c)
 		}
-	}
-	streams := v.streamPacks()
-	page := ui.Column(c).Grow(1).FillWidth().BorderWidth(1, 0, 0, 0).BorderColor(t.Border)
-	if len(streams) == 0 {
-		page.Children(body)
-		return
-	}
-	page.Children(func() {
-		ui.SplitVerticalPercent(c, &v.viewportsShare, func() { v.viewportsView(c, streams) }, body).Fill()
 	})
 }
 
@@ -166,7 +156,7 @@ func latency(d time.Duration) string {
 }
 
 // streamPacks are the packs the sandbox was started with that have a
-// Viewport Stream to show.
+// Viewport Stream, which a Pane can show.
 func (v *sandboxView) streamPacks() []pack.Manifest {
 	var out []pack.Manifest
 	for _, name := range v.running.Packs {
@@ -177,28 +167,6 @@ func (v *sandboxView) streamPacks() []pack.Manifest {
 		}
 	}
 	return out
-}
-
-// viewportsLabel is the label of the strip that chooses a viewport.
-const viewportsLabel = "Viewports"
-
-// viewportsView is the Viewport Stream of a pack that has one. Where more
-// than one pack has, a strip of tabs over it names each by its pack's
-// title and chooses which is shown; one pack's needs no strip.
-func (v *sandboxView) viewportsView(c *ui.Context, streams []pack.Manifest) {
-	if v.viewportTab >= len(streams) {
-		v.viewportTab = len(streams) - 1
-	}
-	ui.Column(c).Fill().Children(func() {
-		if len(streams) > 1 {
-			titles := make([]string, len(streams))
-			for i, m := range streams {
-				titles[i] = m.Title
-			}
-			tabStrip(c, viewportsLabel, &v.viewportTab, titles)
-		}
-		v.viewportOf(streams[v.viewportTab]).view(c)
-	})
 }
 
 func (v *sandboxView) note(c *ui.Context, text string) {

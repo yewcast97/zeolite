@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 
+	"zeolite/internal/pack"
 	"zeolite/internal/sandbox"
 )
 
@@ -15,6 +16,8 @@ import (
 // ends when its Pane closes while it is a plain shell's, when its shell
 // exits, or with its sandbox.
 type session struct {
+	// sv is the sandbox the session is of.
+	sv *sandboxView
 	// id is the session's ID in its workstation.
 	id   string
 	term *terminal.Terminal
@@ -44,14 +47,16 @@ type session struct {
 func (s *session) asks() bool { return s.attention || s.agentEnded }
 
 // pane is one Pane of a running sandbox's page: a place that shows one
-// Terminal Session.
+// Terminal Session, or a Viewport in its place, and never both.
 type pane struct {
 	// key tells the Pane from the others of its sandbox for as long as
 	// it is there, wherever it stands among them.
 	key int
-	// session is what the Pane shows, nil while its shell is being
-	// started and after its shell ended.
-	session *session
+	// session is the Terminal Session the Pane shows, nil while its shell
+	// is being started, after its shell ended, and while it shows a
+	// Viewport: viewport, which is nil while it shows none.
+	session  *session
+	viewport *viewportView
 	// opening is whether a shell is being started for the Pane, and note
 	// what the Pane says while it shows no session: that its shell
 	// ended, or why none was started.
@@ -63,6 +68,13 @@ type pane struct {
 	// lays it out, which says whether the keyboard is in it.
 	focus ui.Handle
 	box   ui.Handle
+	// size is where the Pane stood in the window when it was last built,
+	// strip and all: empty before its first frame.
+	size ui.Rect
+	// copied counts the links clicked in the Pane that went to this Mac's
+	// clipboard and that its strip still says so of, zero once it says
+	// nothing.
+	copied int
 }
 
 // What a Pane says while it shows no session.
@@ -110,7 +122,7 @@ func (v *sandboxView) addPane(p *pane, stacked bool) {
 // main thread, and shows it in a Pane: the backend starts the shell and
 // connects it. What runs in it from there, its user types.
 func (v *sandboxView) openShell(p *pane) {
-	if p.opening || p.session != nil {
+	if p.opening || p.session != nil || p.viewport != nil {
 		return
 	}
 	d, id := v.d, v.id
@@ -125,9 +137,9 @@ func (v *sandboxView) openShell(p *pane) {
 				return
 			}
 			// The sandbox stopped meanwhile, the Pane was closed, or a
-			// session was shown in it: the shell that was started for it
-			// is hung up.
-			if v.lived != lived || !slices.Contains(v.panes, p) || p.session != nil {
+			// session or a Viewport was shown in it: the shell that was
+			// started for it is hung up.
+			if v.lived != lived || !slices.Contains(v.panes, p) || p.session != nil || p.viewport != nil {
 				conn.Close()
 				return
 			}
@@ -144,10 +156,10 @@ func (v *sandboxView) openShell(p *pane) {
 			// The terminal says when its program rings or sends a
 			// notification, on a goroutine of its own. What a notification
 			// says is the program's words, and is not taken.
-			var s *session
+			s := &session{sv: v, id: conn.ID()}
 			asks := func() {
 				d.update(func() {
-					if s != nil {
+					if s.term != nil {
 						s.attention = true
 					}
 				})
@@ -155,15 +167,16 @@ func (v *sandboxView) openShell(p *pane) {
 			opts.OnBell = asks
 			opts.OnNotify = func(_, _ string) { asks() }
 			// A link its user Command-clicks opens in the sandbox's own
-			// browser, where it has one.
-			opts.OpenLink = v.openLink
+			// browser, where a Pane shows it or can, and nowhere on this
+			// Mac.
+			opts.OpenLink = s.openLink
 			term, err := d.newTerminal(opts)
 			if err != nil {
 				conn.Close()
 				p.note, p.failed = err.Error(), true
 				return
 			}
-			s = &session{id: conn.ID(), term: term}
+			s.term = term
 			v.sessions = append(v.sessions, s)
 			p.session = s
 			// A session that just opened is where typing goes. The
@@ -265,17 +278,20 @@ func (v *sandboxView) hide(p *pane) {
 }
 
 // show shows a session in a Pane. One that another Pane shows changes
-// places with what this one shows. One that is Hidden takes the Pane,
-// and what was there loses it.
+// places with what this one shows, a session or a Viewport. One that is
+// Hidden takes the Pane, and what was there loses it: a Viewport is
+// closed, and its Browser Tab stays in the browser.
 func (v *sandboxView) show(s *session, target *pane) {
 	if !slices.Contains(v.sessions, s) || !slices.Contains(v.panes, target) || target.session == s {
 		return
 	}
 	if from := v.paneOf(s); from != nil {
 		from.session, target.session = target.session, s
+		from.viewport, target.viewport = target.viewport, nil
 	} else {
 		was := target.session
 		target.session = s
+		target.leaveViewport()
 		v.lose(was)
 	}
 	target.note, target.failed = "", false
@@ -283,12 +299,17 @@ func (v *sandboxView) show(s *session, target *pane) {
 	v.giveKeyboard(target)
 }
 
-// giveKeyboard has a Pane's terminal take the keyboard, once the Panes
-// are built as they now stand: a session that just came into a Pane has
-// its terminal's view there only from the next frame on.
+// giveKeyboard has a Pane's terminal take the keyboard, or the frames of
+// its Viewport, once the Panes are built as they now stand: a session
+// that just came into a Pane has its terminal's view there only from the
+// next frame on.
 func (v *sandboxView) giveKeyboard(p *pane) {
 	v.d.update(func() {
-		if slices.Contains(v.panes, p) {
+		switch {
+		case !slices.Contains(v.panes, p):
+		case p.viewport != nil:
+			p.viewport.frames.Focus()
+		default:
 			p.focus.Focus()
 		}
 	})
@@ -318,8 +339,10 @@ func (v *sandboxView) choose(s *session) {
 }
 
 // newSession starts a login shell in a Pane that shows none, or whose
-// session's shell ended.
+// session's shell ended, or that shows a Viewport, which is closed: its
+// Browser Tab stays in the browser.
 func (v *sandboxView) newSession(p *pane) {
+	p.leaveViewport()
 	if s := p.session; s != nil {
 		if !s.over {
 			return
@@ -341,10 +364,12 @@ func (v *sandboxView) drop(s *session) {
 }
 
 // closePane takes a Pane away, where it is not the last: its session
-// loses it, and the part it shared its room with takes all of it.
+// loses it, a Viewport it shows is closed, with its Browser Tab left in
+// the browser, and the part it shared its room with takes all of it.
 func (v *sandboxView) closePane(p *pane) {
 	if v.remove(p) {
 		v.lose(p.session)
+		p.leaveViewport()
 	}
 }
 
@@ -397,6 +422,12 @@ func (v *sandboxView) panesView(c *ui.Context) {
 			v.keyboard = p
 		}
 	}
+	// Where the Panes stood in the last frame: the room they have.
+	if p := v.root.pane; p != nil {
+		v.room = p.box.Bounds(c)
+	} else {
+		v.room = v.root.box.Bounds(c)
+	}
 	// What a strip's controls ask is done once every Pane is built: a
 	// Pane that closed would move the ones still to be built.
 	var asked func()
@@ -410,16 +441,20 @@ func (v *sandboxView) panesView(c *ui.Context) {
 func paneName(i int) string { return fmt.Sprintf("Pane %d", i+1) }
 
 // paneView is one Pane: a strip that names it, says which agent runs in
-// its session, and holds its controls, over the terminal of its
-// session. A Pane whose shell ended says so, and its strip offers
-// another. A glyph dragged from the Header is dropped on a Pane, which
-// shows a wash of the accent color while one is over it. It returns
-// what was asked of it, to be done once the Panes are built, or nil.
+// its session, or which browser it shows, and holds its controls, over
+// the terminal of its session or its Viewport. A Pane whose shell ended
+// says so, and its strip offers another. A glyph dragged from the Header
+// is dropped on a Pane, which shows a wash of the accent color while one
+// is over it. It returns what was asked of it, to be done once the Panes
+// are built, or nil.
 func (v *sandboxView) paneView(c *ui.Context, p *pane) func() {
 	t := c.Theme()
 	i := slices.Index(v.panes, p)
 	name := paneName(i)
 	n := fmt.Sprint(i + 1)
+	// Where it stood in the last frame: its size says what it has room
+	// for.
+	p.size = p.box.Bounds(c)
 	// Its label says which sandbox it is of, for whoever does not see
 	// where it stands.
 	of := name
@@ -427,6 +462,7 @@ func (v *sandboxView) paneView(c *ui.Context, p *pane) func() {
 		of = name + " of " + cfg.Name
 	}
 	var closing, opening, hiding, beside, below bool
+	var showing *pack.Manifest
 	container := ui.Column(c).Key(fmt.Sprintf("pane-%d", p.key)).Fill().Label(of).Bind(&p.box)
 	_, over := ui.DragOver[*session](container)
 	dropped, took := ui.Drop[*session](container)
@@ -436,18 +472,42 @@ func (v *sandboxView) paneView(c *ui.Context, p *pane) func() {
 			// The strip's words give way where its Pane is narrow: they are
 			// cut on their one line, and its controls keep their size.
 			ui.Text(c, name).MaxLines(1).TextColor(t.TextMuted).Shrink(1).MinWidth(0)
-			// The agent that runs in the Pane's session, in the app's own
-			// words: its name as the app knows it.
-			if s := p.session; s != nil && s.agent != "" {
+			// The agent that runs in the Pane's session, or the browser
+			// the Pane shows, in the app's own words: its name as the app
+			// knows it.
+			switch s := p.session; {
+			case p.viewport != nil:
+				ui.Text(c, p.viewport.pack.Title).MaxLines(1).Shrink(1).MinWidth(0).Margin(0, 0, 0, t.Space(2))
+			case s != nil && s.agent != "":
 				ui.Text(c, agentTitle(s.agent)).MaxLines(1).Shrink(1).MinWidth(0).Margin(0, 0, 0, t.Space(2))
+			}
+			// A link that was clicked here went to this Mac's clipboard:
+			// the strip says so for a moment, in the app's own word.
+			if p.copied > 0 {
+				ui.Text(c, copiedSays).MaxLines(1).TextColor(t.Accent).Shrink(1).MinWidth(0).Margin(0, 0, 0, t.Space(2))
 			}
 			ui.Spacer(c)
 			// Another Pane, in half of this one's room: beside it, or below
 			// it. One that there is no room for is dimmed, and says why.
 			beside = dimmable(c, "add-beside-"+n, glyphAddPaneBeside, addPaneBesideLabel+" "+name, addPaneBesideLabel, v.cannotDivide(p, false)).Clicked()
 			below = dimmable(c, "add-below-"+n, glyphAddPaneBelow, addPaneBelowLabel+" "+name, addPaneBelowLabel, v.cannotDivide(p, true)).Clicked()
-			if (p.session == nil && !p.opening) || (p.session != nil && p.session.over) {
-				opening = glyphButtonIn(c, "new-session-"+n, glyphAdd, newSessionLabel+" in "+name, newSessionLabel, t.Text).Clicked()
+			// A browser of the sandbox's, in this Pane, in the place of what
+			// it shows.
+			for _, m := range v.streamPacks() {
+				if p.viewport != nil && p.viewport.pack.Name == m.Name {
+					continue
+				}
+				if dimmable(c, "show-"+m.Name+"-"+n, glyphViewport, showLabel(m)+" in "+name, showSays(p, m), v.cannotShow(p, m)).Clicked() {
+					showing = &m
+				}
+			}
+			// A terminal, in a Pane that shows none: in the browser's place,
+			// or where the shell ended.
+			switch {
+			case p.viewport != nil:
+				opening = glyphButtonIn(c, "new-session-"+n, glyphTerminal, newSessionLabel+" in "+name, newSessionLabel+": a login shell, in the browser's place", t.Text).Clicked()
+			case (p.session == nil && !p.opening) || (p.session != nil && p.session.over):
+				opening = glyphButtonIn(c, "new-session-"+n, glyphTerminal, newSessionLabel+" in "+name, newSessionLabel, t.Text).Clicked()
 			}
 			if s := p.session; s != nil && s.agent != "" && !s.over {
 				hiding = glyphButtonIn(c, "hide-"+n, glyphHide, hideLabel+" the session of "+name, hideLabel+": its session goes on, behind its glyph in the Header", t.Text).Clicked()
@@ -457,6 +517,8 @@ func (v *sandboxView) paneView(c *ui.Context, p *pane) func() {
 			}
 		})
 		switch {
+		case p.viewport != nil:
+			ui.Column(c).Key("viewport-of-pane").Grow(1).FillWidth().Children(func() { p.viewport.view(c, name) })
 		case p.session != nil:
 			c.Key("session-" + p.session.id)
 			terminal.View(c, p.session.term).Grow(1).FillWidth().Bind(&p.focus)
@@ -485,6 +547,8 @@ func (v *sandboxView) paneView(c *ui.Context, p *pane) func() {
 		return func() { v.closePane(p) }
 	case hiding:
 		return func() { v.hide(p) }
+	case showing != nil:
+		return func() { v.showViewport(p, *showing) }
 	case opening:
 		return func() { v.newSession(p) }
 	case beside:

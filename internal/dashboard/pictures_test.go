@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"zeolite/internal/sandbox"
+	"zeolite/internal/viewport"
 )
 
 // capture saves a picture of the window where ZEOLITE_SHOTS says, at twice
@@ -154,6 +155,33 @@ func TestPictures(t *testing.T) {
 	h.d.selected = sharedFolderKey("research")
 	frame()
 	h.capture("8-shared-folder")
+
+	// A Pane that shows the browser beside one that shows a terminal,
+	// two that show it at once, and one whose Browser Tab is behind.
+	h.d.selected = "s1"
+	frame()
+	for len(v.panes) > 2 {
+		n := len(v.panes)
+		h.click("Close Pane " + strconv.Itoa(n))
+		h.settle("the Pane to close", func() bool { return len(v.panes) == n-1 })
+	}
+	h.backend.browse(
+		viewport.BrowserTab{ID: "t1", Title: "Example Domain", Address: "https://example.com/"},
+		viewport.BrowserTab{ID: "t2", Title: "Sign in", Address: "https://accounts.example.com/"},
+	)
+	h.ready("s1", browser)
+	shown := h.showBrowser(1)
+	h.settle("the browser's frames", func() bool { return shown.bitmap != nil && len(shown.b.tabs) == 2 })
+	h.park()
+	frame()
+	h.capture("8b-browser-in-a-pane")
+	second := h.showBrowser(0)
+	h.settle("the second browser's frames", func() bool { return second.bitmap != nil })
+	h.backend.putBehind(second.tab, true)
+	h.settle("the Browser Tab behind to say so", func() bool { return h.tt.HasText(behindSays) })
+	h.park()
+	frame()
+	h.capture("8c-two-browsers-one-behind")
 
 	// Sixteen Panes, four by four, in the window as it opens and at its
 	// smallest.

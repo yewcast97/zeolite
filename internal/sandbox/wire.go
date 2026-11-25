@@ -252,6 +252,13 @@ type WorkstationStatus struct {
 	// Sessions are the Terminal Sessions that have a process left, each
 	// with the agent that runs in it, if one does.
 	Sessions []SessionState `json:"sessions,omitempty"`
+	// MemoryUsed is the memory the workstation has in use, in bytes, and
+	// MemoryLimit the most it may have: the sandbox's memory, as the
+	// kernel accounts for the container, with what it holds of files and
+	// gives back when asked left out. Both are zero where the workstation
+	// could not read them.
+	MemoryUsed  uint64 `json:"memoryUsed,omitempty"`
+	MemoryLimit uint64 `json:"memoryLimit,omitempty"`
 }
 
 // SessionState is what runs in a Terminal Session at one moment, as the

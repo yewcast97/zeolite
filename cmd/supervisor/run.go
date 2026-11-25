@@ -115,6 +115,7 @@ func run() error {
 			status.Daemons = append(status.Daemons, d.state())
 		}
 		status.Sessions = sessionStates()
+		status.MemoryUsed, status.MemoryLimit = memoryIn(controlGroup)
 		report(sandbox.SupervisorReport{Status: &status})
 		select {
 		case <-ticker.C:

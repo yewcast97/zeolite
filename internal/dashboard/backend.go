@@ -53,11 +53,16 @@ type Backend interface {
 	OpenTerminalSession(sandboxID string) (TerminalConn, error)
 	// OpenViewport opens the Viewport Stream of a pack in a sandbox, on
 	// the Browser Tab of an ID, or on the browser's first where the ID
-	// is empty.
+	// is empty. It brings no Browser Tab to the front.
 	OpenViewport(sandboxID string, p pack.Manifest, tab string) (ViewportStream, error)
 	// OpenBrowserTab opens a new Browser Tab at an address in the
-	// browser of a pack in a sandbox, and returns its ID.
+	// browser of a pack in a sandbox, in a window of its own, so that it
+	// draws whatever the browser's other tabs do, and returns its ID.
 	OpenBrowserTab(sandboxID string, p pack.Manifest, address string) (string, error)
+	// BrowserTabs lists the Browser Tabs of the browser of a pack in a
+	// sandbox as they are now, in the browser's order: the one last used
+	// first.
+	BrowserTabs(sandboxID string, p pack.Manifest) ([]viewport.BrowserTab, error)
 	// Runtime says what, if anything, is wrong where sandboxes run, and
 	// where the Shared Folders are.
 	Runtime() Runtime
@@ -109,10 +114,13 @@ type ViewportStream interface {
 	// the text selected in it: the page's word.
 	Edit(command viewport.EditCommand) error
 	Selection(ctx context.Context) (string, error)
-	// Tab is the ID of the Browser Tab the stream shows, and Tabs lists
-	// the browser's Browser Tabs as they are now.
+	// Tab is the ID of the Browser Tab the stream shows. Behind is
+	// whether that tab stands behind another in its window, where it
+	// draws nothing and the stream gives no frame, and Front brings it
+	// to the front of that window.
 	Tab() string
-	Tabs(ctx context.Context) ([]viewport.BrowserTab, error)
+	Behind() bool
+	Front() error
 	// Navigate sends the Browser Tab the stream shows to an address,
 	// Back to the one before where it is in its own history, and
 	// Forward to the one after: nowhere, where there is none.

@@ -436,6 +436,19 @@ func (b *backend) OpenBrowserTab(sandboxID string, p pack.Manifest, address stri
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tab, err := viewport.NewTab(ctx, dial, port, address)
-	return tab.ID, err
+	return viewport.NewTab(ctx, dial, port, address)
+}
+
+func (b *backend) BrowserTabs(sandboxID string, p pack.Manifest) ([]viewport.BrowserTab, error) {
+	orch, err := b.orchestrator()
+	if err != nil {
+		return nil, err
+	}
+	port := p.ViewportStream.Port
+	dial := func(ctx context.Context) (io.ReadWriteCloser, error) {
+		return orch.DialWorkstation(ctx, sandboxID, port)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return viewport.Tabs(ctx, dial, port)
 }
