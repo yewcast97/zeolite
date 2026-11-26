@@ -49,6 +49,11 @@ type HostTools struct {
 	// without it, and with it what asks a platform's name, as Python's
 	// platform module does. The name often holds its owner's.
 	MacName bool `json:"macName,omitempty"`
+	// Applications are the sandbox's Allowed Applications: folders of
+	// this Mac's /Applications, by name, that its Host Tools read and
+	// run. Of any other the Host Tool Wall says nothing, not even
+	// whether it is there.
+	Applications []string `json:"applications,omitempty"`
 }
 
 // ReservedEnvironment are the variables the app sets for every

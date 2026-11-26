@@ -218,6 +218,8 @@ type SupervisorConfig struct {
 type HostToolsNotice struct {
 	GPU     bool `json:"gpu,omitempty"`
 	MacName bool `json:"macName,omitempty"`
+	// Applications are the sandbox's Allowed Applications, by name.
+	Applications []string `json:"applications,omitempty"`
 }
 
 // SupervisorConfigEnv names the variable that holds a SupervisorConfig.

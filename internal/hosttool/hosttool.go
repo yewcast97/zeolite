@@ -1,9 +1,10 @@
 // Package hosttool is the app's side of a sandbox's Host Tools: programs
 // of this Mac that the sandbox's agent runs. It starts each under the
-// Host Tool Wall, a Seatbelt profile that leaves it this Mac's public
-// software to read, the sandbox's Shared Folder and its Host Tool
-// Scratch to write, and nothing else of this Mac: no file of the user's,
-// no network, no other program.
+// Host Tool Wall, a Seatbelt profile that leaves it the system's own
+// software, Homebrew's and the sandbox's Allowed Applications to read,
+// the sandbox's Shared Folder and its Host Tool Scratch to write, and
+// nothing else of this Mac: no file of the user's, no network, no other
+// program.
 //
 // The launch is part of the Wall. A Host Tool has the environment this
 // package gives it and none of the app's, no standard input, a process
@@ -35,6 +36,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -75,19 +77,37 @@ const (
 // homebrewBin is where Homebrew keeps its programs on this Mac.
 const homebrewBin = "/opt/homebrew/bin"
 
+// applicationsDir is where this Mac keeps its applications, and
+// xcodeApplication the one that holds its compilers, where it is there.
+const (
+	applicationsDir  = "/Applications"
+	xcodeApplication = "Xcode.app"
+)
+
+// The rules a sandbox's Setup adds to the Wall for each of its Allowed
+// Applications: one to read it and to run what is in it, and with the
+// GPU one more, by which a tool hands the shader compiler the
+// application to read, as it may itself. The folder is the rule's
+// parameter: its name is in no rule.
+const (
+	applicationRule          = `(allow file-read* file-test-existence file-map-executable process-exec (subpath (param "APPLICATION_%d")))` + "\n"
+	applicationExtensionRule = `(allow file-issue-extension (require-all (extension-class "com.apple.app-sandbox.read") (subpath (param "APPLICATION_%d"))))` + "\n"
+)
+
 // Tools starts Host Tools on this Mac.
 type Tools struct {
 	root string
 	// gpu is what a run that is given the GPU has beside the Wall.
 	gpu gpuFiles
-	// homebrewBin is Homebrew's folder of programs, and compilerDirs the
-	// folders of this Mac's compilers: a Host Tool's PATH is those, then
-	// Homebrew's, then the system's. developerDir and sdk are where the
-	// compilers are, as every Host Tool is told.
-	homebrewBin  string
-	compilerDirs []string
-	developerDir string
-	sdk          string
+	// homebrewBin is Homebrew's folder of programs, and applicationsDir
+	// the folder a sandbox's Allowed Applications are in.
+	homebrewBin     string
+	applicationsDir string
+	// xcode and commandLineTools are this Mac's compilers, as each of
+	// the two holds them: a Host Tool has Xcode's where Xcode is an
+	// Allowed Application of its sandbox, and the command line tools'
+	// otherwise.
+	xcode, commandLineTools compilers
 
 	mu sync.Mutex
 	// serving are the sandboxes whose Host Tools are being served: a
@@ -114,7 +134,7 @@ func install(root, homebrewBin string) (*Tools, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Tools{root: resolved, gpu: gpuFilesIn(resolved), homebrewBin: homebrewBin, serving: map[string]int{}}
+	t := &Tools{root: resolved, gpu: gpuFilesIn(resolved), homebrewBin: homebrewBin, applicationsDir: applicationsDir, serving: map[string]int{}}
 	if err := ownDir(t.scratchRoot()); err != nil {
 		return nil, err
 	}
@@ -141,28 +161,54 @@ func ownDir(dir string) error {
 	return os.Chmod(dir, 0o700)
 }
 
+// compilers are this Mac's compilers as one place holds them: dirs are
+// their folders, which stand first in a Host Tool's PATH, and
+// developerDir and sdk where they and their SDK are, as a Host Tool is
+// told.
+type compilers struct {
+	dirs         []string
+	developerDir string
+	sdk          string
+}
+
 // findCompilers looks where this Mac keeps its compilers. The system's
 // own cc and swiftc are shims that look them up through a cache outside
 // the Wall, so a Host Tool is given their real folders first.
 func (t *Tools) findCompilers() {
-	var dirs []string
-	const xcode = "/Applications/Xcode.app/Contents/Developer"
 	const commandLineTools = "/Library/Developer/CommandLineTools"
-	if isDir(xcode) {
-		dirs = append(dirs, xcode+"/Toolchains/XcodeDefault.xctoolchain/usr/bin", xcode+"/usr/bin")
-		t.developerDir = xcode
-		t.sdk = xcode + "/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
-	} else if isDir(commandLineTools) {
-		t.developerDir = commandLineTools
-		t.sdk = commandLineTools + "/SDKs/MacOSX.sdk"
-	}
+	t.xcode, t.commandLineTools = compilers{}, compilers{}
 	if isDir(commandLineTools) {
-		dirs = append(dirs, commandLineTools+"/usr/bin")
+		t.commandLineTools = compilers{
+			dirs:         []string{commandLineTools + "/usr/bin"},
+			developerDir: commandLineTools,
+			sdk:          sdkIn(commandLineTools + "/SDKs/MacOSX.sdk"),
+		}
 	}
-	if !isDir(t.sdk) {
-		t.sdk = ""
+	if xcode := filepath.Join(t.applicationsDir, xcodeApplication, "Contents/Developer"); isDir(xcode) {
+		t.xcode = compilers{
+			dirs:         append([]string{xcode + "/Toolchains/XcodeDefault.xctoolchain/usr/bin", xcode + "/usr/bin"}, t.commandLineTools.dirs...),
+			developerDir: xcode,
+			sdk:          sdkIn(xcode + "/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"),
+		}
 	}
-	t.compilerDirs = dirs
+}
+
+// sdkIn is an SDK's folder, or nothing where it is not there.
+func sdkIn(dir string) string {
+	if !isDir(dir) {
+		return ""
+	}
+	return dir
+}
+
+// compilersOf are the compilers a sandbox's Host Tools have: Xcode's,
+// where Xcode is one of its Allowed Applications, and the command line
+// tools' otherwise, which the Wall lets every tool read.
+func (t *Tools) compilersOf(s Settings) compilers {
+	if t.xcode.developerDir != "" && slices.Contains(s.Applications, xcodeApplication) {
+		return t.xcode
+	}
+	return t.commandLineTools
 }
 
 // path is a Host Tool's PATH: this Mac's compilers, Homebrew's programs
@@ -170,11 +216,44 @@ func (t *Tools) findCompilers() {
 // Homebrew's programs, so that one started by its name is started by
 // its wrapper.
 func (t *Tools) path(s Settings) string {
-	dirs := append([]string{}, t.compilerDirs...)
+	dirs := append([]string{}, t.compilersOf(s).dirs...)
 	if s.GPU {
 		dirs = append(dirs, t.gpu.wrappers)
 	}
 	return strings.Join(append(dirs, t.homebrewBin, "/usr/bin", "/bin"), ":")
+}
+
+// Applications lists what this Mac has in /Applications that a Setup
+// can name: the folders at its top, by name. A link there is none of
+// them: where it leads is not the Wall's to open.
+func (t *Tools) Applications() ([]string, error) {
+	entries, err := os.ReadDir(t.applicationsDir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() && sandbox.ValidApplicationName(entry.Name()) {
+			names = append(names, entry.Name())
+		}
+	}
+	return names, nil
+}
+
+// CheckApplications says why a sandbox's Allowed Applications cannot be
+// given as they are named, or nil: each is a folder of /Applications
+// itself. One that is a link is refused: a tool that reads it reads
+// where it leads, which may be the user's home.
+func (t *Tools) CheckApplications(names []string) error {
+	for _, name := range names {
+		if !sandbox.ValidApplicationName(name) {
+			return fmt.Errorf("%q does not name an application", name)
+		}
+		if info, err := os.Lstat(filepath.Join(t.applicationsDir, name)); err != nil || !info.IsDir() {
+			return fmt.Errorf("%s is not a folder of %s: it cannot be an Allowed Application", name, t.applicationsDir)
+		}
+	}
+	return nil
 }
 
 func isDir(path string) bool {
@@ -192,9 +271,14 @@ type Settings struct {
 	// GPU and MacName are what the sandbox's Setup adds to the Wall.
 	GPU     bool
 	MacName bool
+	// Applications are the sandbox's Allowed Applications, by name.
+	Applications []string
 }
 
-// profile is the Wall for these settings.
+// profile is the Wall for these settings: the Wall, what the sandbox's
+// Setup adds to it of the GPU and of this Mac's name, and the rules of
+// its Allowed Applications, each of which names its application by a
+// parameter.
 func profile(s Settings) string {
 	rules := wall
 	if s.GPU {
@@ -203,7 +287,23 @@ func profile(s Settings) string {
 	if s.MacName {
 		rules += macNameRules
 	}
+	for n := range s.Applications {
+		rules += fmt.Sprintf(applicationRule, n)
+		if s.GPU {
+			rules += fmt.Sprintf(applicationExtensionRule, n)
+		}
+	}
 	return rules
+}
+
+// parameters are what the Wall's rules name: the sandbox's two folders,
+// the GPU's folder, and its Allowed Applications, in their order.
+func (t *Tools) parameters(s Settings, sc scratch, shared string) []string {
+	args := []string{"-D", "SHARED=" + shared, "-D", "SCRATCH=" + sc.dir, "-D", "GPU=" + t.gpu.dir}
+	for n, name := range s.Applications {
+		args = append(args, "-D", fmt.Sprintf("APPLICATION_%d=%s", n, filepath.Join(t.applicationsDir, name)))
+	}
+	return args
 }
 
 // scratch is a sandbox's Host Tool Scratch, with its folders.
@@ -265,11 +365,12 @@ func (t *Tools) environment(s Settings, sc scratch) []string {
 		"TZ=UTC",
 		"LANG=en_US.UTF-8",
 	}
-	if t.developerDir != "" {
-		env = append(env, "DEVELOPER_DIR="+t.developerDir)
+	compilers := t.compilersOf(s)
+	if compilers.developerDir != "" {
+		env = append(env, "DEVELOPER_DIR="+compilers.developerDir)
 	}
-	if t.sdk != "" {
-		env = append(env, "SDKROOT="+t.sdk)
+	if compilers.sdk != "" {
+		env = append(env, "SDKROOT="+compilers.sdk)
 	}
 	if s.GPU {
 		env = append(env,
@@ -291,7 +392,7 @@ func (t *Tools) environment(s Settings, sc scratch) []string {
 // command is the run of a request, not yet started: sandbox-exec, which
 // puts the Wall around env, which starts the program in its folder.
 func (t *Tools) command(s Settings, sc scratch, shared string, r sandbox.HostToolRequest) *exec.Cmd {
-	args := []string{"-p", profile(s), "-D", "SHARED=" + shared, "-D", "SCRATCH=" + sc.dir, "-D", "GPU=" + t.gpu.dir, envProgram}
+	args := append(append([]string{"-p", profile(s)}, t.parameters(s, sc, shared)...), envProgram)
 	if r.Dir != "" {
 		// The change of folder is env's, inside the Wall: the app
 		// follows no link an agent made.

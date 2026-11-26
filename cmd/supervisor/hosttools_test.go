@@ -367,6 +367,7 @@ func TestTheServerTellsAnAgentOfHostTools(t *testing.T) {
 		"Of your files the program sees /workspace/shared and nothing else", "no other file of the Mac",
 		"fetch yourself, built for macOS, into /workspace/shared",
 		"The Mac's GPU is not given", "The Mac's name is not given",
+		"Homebrew under /opt/homebrew, the system's tools and its compilers, and nothing of /Applications: ask your user for an application you need.",
 	} {
 		if !strings.Contains(description, want) {
 			t.Errorf("the tool's description does not say %q:\n%s", want, description)
@@ -399,6 +400,20 @@ func TestTheServerTellsAnAgentOfHostTools(t *testing.T) {
 	}
 	if strings.Contains(description, "not given") {
 		t.Errorf("with the GPU and the name the tool's description says:\n%s", description)
+	}
+	// Of /Applications a program reads what the sandbox is given, which
+	// the tool names by its paths, and nothing else there.
+	instructions, description = described(sandbox.HostToolsNotice{Applications: []string{"Blender.app", "Xcode.app"}})
+	for _, text := range []string{instructions, description} {
+		if !strings.Contains(text, "and of /Applications these and nothing else: /Applications/Blender.app, /Applications/Xcode.app. Ask your user for another. It has no network") {
+			t.Errorf("with two applications given, an agent is told:\n%s", text)
+		}
+		if strings.Contains(text, "nothing of /Applications") {
+			t.Errorf("with two applications given, an agent is told it has none:\n%s", text)
+		}
+	}
+	if named := notAnAgentsWords.FindAllString(description, -1); len(named) != 0 {
+		t.Errorf("with two applications given, the tool's description names %q:\n%s", named, description)
 	}
 }
 

@@ -61,6 +61,12 @@ func ValidInterfaceName(name string) bool { return interfacePattern.MatchString(
 // It names a folder of the Mac, so it has the shape of a sandbox's ID.
 func ValidSharedFolderName(name string) bool { return idPattern.MatchString(name) }
 
+// ValidApplicationName reports whether name can name an Allowed
+// Application: one entry of a folder, and nothing that leads out of it.
+func ValidApplicationName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00")
+}
+
 // Validate returns what is wrong with the config, in the order of its
 // fields, or nil.
 func (c Config) Validate() []FieldError {
@@ -175,8 +181,18 @@ func (c Config) Validate() []FieldError {
 	switch {
 	case c.HostTools.Enabled && c.SharedFolder == "":
 		add(FieldHostTools, "Host Tools run in the sandbox's Shared Folder: give the sandbox one")
-	case !c.HostTools.Enabled && (c.HostTools.GPU || c.HostTools.MacName):
-		add(FieldHostTools, "the GPU and this Mac's name are given to Host Tools, which the sandbox does not have")
+	case !c.HostTools.Enabled && (c.HostTools.GPU || c.HostTools.MacName || len(c.HostTools.Applications) > 0):
+		add(FieldHostTools, "the GPU, this Mac's name and its Allowed Applications are given to Host Tools, which the sandbox does not have")
+	}
+	applications := map[string]bool{}
+	for _, name := range c.HostTools.Applications {
+		switch {
+		case !ValidApplicationName(name):
+			add(FieldHostTools, "an Allowed Application is the name of one folder of /Applications, such as Blender.app: %q is not", name)
+		case applications[name]:
+			add(FieldHostTools, "%s is an Allowed Application twice", name)
+		}
+		applications[name] = true
 	}
 	return errs
 }

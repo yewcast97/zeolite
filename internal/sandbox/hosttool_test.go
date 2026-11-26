@@ -77,7 +77,7 @@ func TestHostToolsNeedASharedFolder(t *testing.T) {
 		return ""
 	}
 	cfg := gated()
-	if cfg.HostTools != (HostTools{}) {
+	if h := cfg.HostTools; h.Enabled || h.GPU || h.MacName || len(h.Applications) != 0 {
 		t.Errorf("a new sandbox has Host Tools: %+v", cfg.HostTools)
 	}
 	cfg.HostTools.Enabled = true
@@ -92,5 +92,39 @@ func TestHostToolsNeedASharedFolder(t *testing.T) {
 	cfg.HostTools.Enabled = false
 	if got := said(cfg); !strings.Contains(got, "does not have") {
 		t.Errorf("the GPU for Host Tools the sandbox does not have: %q", got)
+	}
+	cfg.HostTools = HostTools{Applications: []string{"Blender.app"}}
+	if got := said(cfg); !strings.Contains(got, "does not have") {
+		t.Errorf("an Allowed Application for Host Tools the sandbox does not have: %q", got)
+	}
+}
+
+// An Allowed Application is the name of one folder of /Applications: it
+// leads nowhere else, and is named once.
+func TestAnAllowedApplicationIsOneFoldersName(t *testing.T) {
+	said := func(names ...string) string {
+		cfg := gated()
+		cfg.SharedFolder = "research"
+		cfg.HostTools = HostTools{Enabled: true, Applications: names}
+		for _, e := range cfg.Validate() {
+			if e.Field == FieldHostTools {
+				return e.Message
+			}
+		}
+		return ""
+	}
+	if got := said("Blender.app", "A Folder of Tools", "微信.app", "It's \"quoted\".app"); got != "" {
+		t.Errorf("names of folders: %q", got)
+	}
+	for _, bad := range []string{"", ".", "..", "../Users", "Utilities/Terminal.app", "/Applications/Blender.app", "a\x00b"} {
+		if got := said("Blender.app", bad); !strings.Contains(got, "is not") {
+			t.Errorf("%q as an Allowed Application: %q", bad, got)
+		}
+		if ValidApplicationName(bad) {
+			t.Errorf("%q is taken for an application's name", bad)
+		}
+	}
+	if got := said("Blender.app", "Xcode.app", "Blender.app"); !strings.Contains(got, "twice") {
+		t.Errorf("an application named twice: %q", got)
 	}
 }

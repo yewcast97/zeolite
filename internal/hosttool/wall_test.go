@@ -1,10 +1,14 @@
 package hosttool
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,7 +62,7 @@ func TestTheWallAsItIsWritten(t *testing.T) {
 		if !strings.HasPrefix(rule, "(allow ") {
 			continue
 		}
-		for _, never := range []string{"(allow default", "network", "trustd", "opendirectoryd", "notification_center", "pasteboard", "windowserver", "coreservicesd", "securityd", "launchservicesd", "appleevent", "nvram", "system-socket", "(subpath \"/\")", "(subpath \"/Users\")", "(subpath \"/Volumes\")", "(subpath \"/private\")"} {
+		for _, never := range []string{"(allow default", "network", "trustd", "opendirectoryd", "notification_center", "pasteboard", "windowserver", "coreservicesd", "securityd", "launchservicesd", "appleevent", "nvram", "system-socket", "(subpath \"/\")", "(subpath \"/Users\")", "(subpath \"/Volumes\")", "(subpath \"/private\")", "(subpath \"/Applications\")", "ipc-sysv", "necp"} {
 			if strings.Contains(rule, never) {
 				t.Errorf("the Wall allows %s: %s", never, rule)
 			}
@@ -118,7 +122,7 @@ func TestTheWallAsItIsWritten(t *testing.T) {
 		}
 		issued++
 		switch rule {
-		case `(allow file-issue-extension (require-all (extension-class "com.apple.app-sandbox.read") (require-any (subpath "/Applications") (subpath (param "SHARED")) (subpath (param "SCRATCH")))))`,
+		case `(allow file-issue-extension (require-all (extension-class "com.apple.app-sandbox.read") (require-any (subpath (param "SHARED")) (subpath (param "SCRATCH")))))`,
 			`(allow file-issue-extension (require-all (extension-class "com.apple.app-sandbox.read-write") (require-any (subpath (param "SHARED")) (subpath (param "SCRATCH")))))`:
 		default:
 			t.Errorf("with the GPU the Wall issues an extension: %s", rule)
@@ -163,12 +167,52 @@ func TestTheWallAsItIsWritten(t *testing.T) {
 		}
 	}
 
+	// Of /Applications the Wall gives the folder's name, and no listing:
+	// what is in it is given by the rules of the Allowed Applications.
+	for _, rule := range all {
+		if strings.HasPrefix(rule, "(allow ") && strings.Contains(rule, `"/Applications"`) && !strings.HasPrefix(rule, "(allow file-read-metadata file-test-existence (literal ") {
+			t.Errorf("the Wall gives /Applications: %s", rule)
+		}
+	}
+
+	// The hardware's registry: its port is a tool's only with the GPU,
+	// and its properties then are a few, of the graphics device and its
+	// surfaces alone. A socket is asked what a pipe would answer.
+	for _, rule := range base {
+		if strings.HasPrefix(rule, "(allow ") && (strings.Contains(rule, "syscall-mig") || strings.Contains(rule, "iokit")) {
+			t.Errorf("the Wall reaches the hardware's registry without the GPU: %s", rule)
+		}
+	}
+	for _, rule := range all {
+		if !strings.HasPrefix(rule, "(allow ") {
+			continue
+		}
+		switch {
+		case strings.Contains(rule, "syscall-mig") && rule != "(allow syscall-mig (kernel-mig-routine host_get_io_master))":
+			t.Errorf("the Wall allows a message to the kernel: %s", rule)
+		case strings.Contains(rule, "iokit-get-properties") && !strings.HasPrefix(rule, `(allow iokit-get-properties (require-all (iokit-registry-entry-class "IOAccelerator" "IOSurfaceRoot") (iokit-property `):
+			t.Errorf("the Wall reads properties of more than the graphics device: %s", rule)
+		case strings.Contains(rule, "socket-ioctl") && rule != "(allow socket-ioctl (ioctl-command FIONBIO) (ioctl-command FIONREAD) (ioctl-command FIOCLEX) (ioctl-command FIONCLEX) (ioctl-command FIOASYNC))":
+			t.Errorf("the Wall lets a socket be asked: %s", rule)
+		case strings.Contains(rule, "syscall-unix"):
+			t.Errorf("the Wall allows a call by its number: %s", rule)
+		}
+	}
+
 	// What "deny default" leaves open is closed by name, each of them.
 	for _, closed := range []string{
 		"(deny process-info*)", "(deny iokit-get-properties)", "(deny iokit-open)", "(deny nvram*)", "(deny system-info)",
 		"(deny syscall-unix (syscall-number SYS_gethostuuid))",
 		"(deny syscall-unix (syscall-number SYS_getfsstat) (syscall-number SYS_getfsstat64))",
+		"(deny syscall-unix (syscall-number SYS_getlogin))",
+		"(deny syscall-unix (syscall-number SYS_fsgetpath) (syscall-number SYS_fsgetpath_ext))",
+		"(deny syscall-unix (syscall-number SYS_necp_open) (syscall-number SYS_necp_client_action) (syscall-number SYS_necp_match_policy) (syscall-number SYS_necp_session_open) (syscall-number SYS_necp_session_action))",
+		"(deny syscall-unix (syscall-number SYS_shmget) (syscall-number SYS_semget) (syscall-number SYS_msgget) (syscall-number SYS_shmsys) (syscall-number SYS_semsys) (syscall-number SYS_msgsys))",
+		"(deny socket-ioctl)",
+		"(deny syscall-mig (kernel-mig-routine host_get_io_master))",
+		"(deny syscall-mig (kernel-mig-routine io_registry_get_root_entry io_registry_create_iterator io_registry_entry_create_iterator io_registry_iterator_enter_entry io_registry_iterator_exit_entry io_registry_entry_from_path io_registry_entry_from_path_ool io_registry_entry_get_name io_registry_entry_get_name_in_plane io_registry_entry_get_path io_registry_entry_get_path_ool io_registry_entry_get_location_in_plane io_registry_entry_get_child_iterator io_registry_entry_get_parent_iterator io_registry_entry_in_plane io_registry_entry_get_registry_entry_id io_object_get_class io_object_get_superclass io_object_get_bundle_identifier io_catalog_get_data io_catalog_get_gen_count))",
 		`(deny file-read* file-test-existence file-map-executable (subpath "/System/Volumes"))`,
+		`(deny file-read* file-test-existence (regex #"^/opt/homebrew/Cellar/[^/]+/[^/]+/(INSTALL_RECEIPT\.json|homebrew\.[^/]+\.(plist|service))$"))`,
 	} {
 		found := false
 		for _, rule := range base {
@@ -180,6 +224,94 @@ func TestTheWallAsItIsWritten(t *testing.T) {
 	}
 }
 
+// hasCompiler reports whether the sandbox's Host Tools have a compiler
+// of that name, in the folders their PATH begins with.
+func (w *walled) hasCompiler(name string) bool {
+	for _, dir := range w.tools.compilersOf(w.settings).dirs {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// What a Setup adds to the Wall for its Allowed Applications: one rule
+// for each, of one shape, and with the GPU one more; the application is
+// the rule's parameter, and its name is in no rule.
+func TestTheRulesOfTheAllowedApplications(t *testing.T) {
+	w := newWalled(t)
+	names := []string{"Blender.app", `It's "quoted") (allow default).app`, "微信.app"}
+	sc := w.tools.scratchOf("s1")
+	for _, gpu := range []bool{false, true} {
+		plain := Settings{SandboxID: "s1", SharedFolder: w.shared, GPU: gpu}
+		given := plain
+		given.Applications = names
+		before, after := rules(t, profile(plain)), rules(t, profile(given))
+		var want []string
+		for n := range names {
+			want = append(want, fmt.Sprintf(`(allow file-read* file-test-existence file-map-executable process-exec (subpath (param "APPLICATION_%d")))`, n))
+			if gpu {
+				want = append(want, fmt.Sprintf(`(allow file-issue-extension (require-all (extension-class "com.apple.app-sandbox.read") (subpath (param "APPLICATION_%d"))))`, n))
+			}
+		}
+		if added := after[len(before):]; !slices.Equal(after[:len(before)], before) || !slices.Equal(added, want) {
+			t.Errorf("with the GPU %v, the Allowed Applications add %q, want %q", gpu, added, want)
+		}
+		for _, name := range names {
+			if strings.Contains(profile(given), name) {
+				t.Errorf("the Wall's rules hold the name %s", name)
+			}
+		}
+		// The parameters name the two folders, the GPU's, and each
+		// application's folder under /Applications, in their order.
+		wantParameters := []string{"-D", "SHARED=" + w.shared, "-D", "SCRATCH=" + sc.dir, "-D", "GPU=" + w.tools.gpu.dir}
+		for n, name := range names {
+			wantParameters = append(wantParameters, "-D", fmt.Sprintf("APPLICATION_%d=/Applications/%s", n, name))
+		}
+		if got := w.tools.parameters(given, sc, w.shared); !slices.Equal(got, wantParameters) {
+			t.Errorf("the Wall's parameters are %q, want %q", got, wantParameters)
+		}
+	}
+	// A sandbox with no Allowed Application has the Wall, and what its
+	// Setup adds of the GPU and of this Mac's name, and nothing else.
+	if got := profile(Settings{GPU: true, MacName: true}); got != wall+gpuRules+macNameRules {
+		t.Error("the Wall of a sandbox with no Allowed Application is not the Wall, the GPU's rules and the name's")
+	}
+
+	// An Allowed Application is a folder of /Applications itself: one
+	// that is a link, or is not there, is not served, and a tool that
+	// would read the link would read where it leads.
+	program := w.ownApplications("Given.app")
+	if err := os.Symlink(w.outside, filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(program("Given.app"))))), "Linked.app")); err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := w.tools.Applications(); err != nil || !slices.Equal(listed, []string{"Given.app"}) {
+		t.Errorf("the applications a Setup can name are %q (%v), want the one folder", listed, err)
+	}
+	for _, bad := range []string{"Linked.app", "Missing.app", "../outside", ""} {
+		settings := w.settings
+		settings.Applications = []string{"Given.app", bad}
+		if served, err := w.tools.Serve(settings); err == nil {
+			served.Close()
+			t.Errorf("Host Tools were served with %q as an Allowed Application", bad)
+		}
+	}
+	settings := w.settings
+	settings.Applications = []string{"Given.app"}
+	served, err := w.tools.Serve(settings)
+	if err != nil {
+		t.Fatalf("serving Host Tools with an Allowed Application: %v", err)
+	}
+	defer served.Close()
+	if result := served.Run(context.Background(), sandbox.HostToolRequest{Argv: []string{program("Given.app")}}); result.Stdout != "a tool of Given.app\n" {
+		t.Errorf("a program of an Allowed Application: %+v", result)
+	}
+	// The link itself is not read under the Wall, whoever is given what.
+	if result := w.sh(settings, "readlink "+shellQuote(filepath.Join(w.tools.applicationsDir, "Linked.app"))); result.ExitCode == 0 || strings.Contains(result.Stdout, w.outside) {
+		t.Errorf("a link beside an Allowed Application was read: %+v", result)
+	}
+}
+
 // metalProbe builds the test's Metal program in the Shared Folder, as a
 // Host Tool, or skips the test where this Mac has no Swift compiler.
 func (w *walled) metalProbe() {
@@ -187,7 +319,7 @@ func (w *walled) metalProbe() {
 	if testing.Short() {
 		w.t.Skip("builds a Swift program")
 	}
-	if _, err := os.Stat(filepath.Join(w.tools.developerDir, "Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc")); err != nil {
+	if !w.hasCompiler("swiftc") {
 		w.t.Skip("this Mac has no Swift compiler: the GPU is not tried")
 	}
 	source, err := os.ReadFile("testdata/metalprobe.swift")
@@ -336,4 +468,133 @@ func TestAHostToolEncodesVideoWithTheHardware(t *testing.T) {
 	if result := w.run(w.settings, sandbox.HostToolRequest{Argv: []string{"sh", "-c", encode + "no-gpu-by-sh.mp4"}, Seconds: 300}); result.ExitCode == 0 {
 		t.Errorf("the hardware encoded for a shell without the GPU: %+v", result)
 	}
+}
+
+// registryProbe builds the test's registry program in the Shared Folder,
+// as a Host Tool, or skips the test where this Mac has no C compiler.
+func (w *walled) registryProbe() {
+	w.t.Helper()
+	if testing.Short() {
+		w.t.Skip("builds a C program")
+	}
+	if !w.hasCompiler("cc") {
+		w.t.Skip("this Mac has no C compiler: the hardware's registry is not tried")
+	}
+	source, err := os.ReadFile("testdata/registryprobe.c")
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.shared, "registryprobe.c"), source, 0o600); err != nil {
+		w.t.Fatal(err)
+	}
+	built := w.run(w.settings, sandbox.HostToolRequest{Argv: []string{"cc", "-O", "-framework", "IOKit", "-framework", "CoreFoundation", "-o", "registryprobe", "registryprobe.c"}, Seconds: 300})
+	if built.ExitCode != 0 {
+		w.t.Fatalf("building a C program under the Wall: %+v", built)
+	}
+}
+
+// The hardware's registry names every device and interface of this Mac.
+// A Host Tool reaches none of it; with the GPU it finds a device by its
+// class, as Metal does the graphics device, and still walks nothing and
+// reads no name, place or class of what it found. With no Wall the same
+// program does all of it, so each refusal is the Wall's.
+func TestTheHardwareRegistryIsNotAHostTools(t *testing.T) {
+	w := newWalled(t)
+	w.registryProbe()
+	said := func(out string) map[string]string {
+		got := map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			if name, verdict, ok := strings.Cut(line, " "); ok {
+				got[name] = verdict
+			}
+		}
+		return got
+	}
+	all := []string{
+		"walk-the-registry", "find-a-device-by-its-class", "name-a-device", "path-of-a-device", "class-of-a-device",
+		"number-of-a-device", "parent-of-a-device", "children-of-a-device", "class-of-a-device-by-a-property", "serial-number-of-this-mac",
+	}
+	request := sandbox.HostToolRequest{Argv: []string{"./registryprobe"}}
+
+	result := w.run(w.settings, request)
+	got := said(result.Stdout)
+	if result.ExitCode != 0 || len(got) != len(all) {
+		t.Fatalf("the probe under the Wall: %+v", result)
+	}
+	for _, name := range all {
+		if got[name] != "refused" {
+			t.Errorf("under the Wall, %s: %q, want refused", name, got[name])
+		}
+	}
+
+	gpu := w.settings
+	gpu.GPU = true
+	result = w.run(gpu, request)
+	got = said(result.Stdout)
+	if result.ExitCode != 0 || len(got) != len(all) {
+		t.Fatalf("the probe with the GPU: %+v", result)
+	}
+	for _, name := range all {
+		want := "refused"
+		if name == "find-a-device-by-its-class" {
+			want = "ok"
+		}
+		if got[name] != want {
+			t.Errorf("with the GPU, %s: %q, want %s", name, got[name], want)
+		}
+	}
+
+	control := exec.Command(filepath.Join(w.shared, "registryprobe"))
+	out, err := control.Output()
+	if err != nil {
+		t.Fatalf("the probe without the Wall: %v", err)
+	}
+	if got := said(string(out)); len(got) != len(all) {
+		t.Fatalf("the probe without the Wall said %v", got)
+	} else {
+		for name, verdict := range got {
+			if verdict != "ok" {
+				t.Errorf("without the Wall, %s: %q: the test cannot tell what the Wall refuses", name, verdict)
+			}
+		}
+	}
+}
+
+// What Homebrew wrote down of an installation, at the top of a
+// package's folder, holds paths of the home it was installed from, and
+// so its user's name: its receipt, and the files that start a service
+// of it. A Host Tool reads neither, and the rest of the package as
+// before.
+func TestHomebrewsReceiptsAreNotRead(t *testing.T) {
+	receipts, _ := filepath.Glob("/opt/homebrew/Cellar/*/*/INSTALL_RECEIPT.json")
+	if len(receipts) == 0 {
+		t.Skip("this Mac has no receipt of Homebrew's")
+	}
+	services, _ := filepath.Glob("/opt/homebrew/Cellar/*/*/homebrew.*.plist")
+	more, _ := filepath.Glob("/opt/homebrew/Cellar/*/*/homebrew.*.service")
+	w := newWalled(t)
+	for _, file := range append(append([]string{receipts[0]}, first(services)...), first(more)...) {
+		if _, err := os.Stat(file); err != nil {
+			t.Fatalf("without the Wall: %v", err)
+		}
+		if result := w.run(w.settings, sandbox.HostToolRequest{Argv: []string{"/bin/cat", file}}); result.ExitCode == 0 || result.Stdout != "" {
+			t.Errorf("a Host Tool read %s (exit %d, %d bytes)", file, result.ExitCode, len(result.Stdout))
+		}
+		if result := w.run(w.settings, sandbox.HostToolRequest{Argv: []string{"/usr/bin/stat", file}}); result.ExitCode == 0 {
+			t.Errorf("a Host Tool was told of %s", file)
+		}
+	}
+	// The package's folder is read as before, by its own path and by
+	// the one Homebrew links to it.
+	if result := w.run(w.settings, sandbox.HostToolRequest{Argv: []string{"/bin/ls", filepath.Dir(receipts[0])}}); result.ExitCode != 0 {
+		t.Errorf("a package's folder under the Wall: %+v", result)
+	}
+}
+
+// first is the first of some names, or none.
+func first(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	return names[:1]
 }

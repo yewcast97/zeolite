@@ -38,6 +38,9 @@ type Backend interface {
 	// this Mac's disk. It refuses while the sandbox's Host Tools run, and
 	// it is no error for there to be none.
 	RemoveHostToolScratch(sandboxID string) error
+	// Applications lists the folders of this Mac's /Applications, by
+	// name, for the form to offer as a sandbox's Allowed Applications.
+	Applications() []string
 	// SharedFolders lists the Shared Folders on this Mac's disk, by
 	// name.
 	SharedFolders() ([]string, error)

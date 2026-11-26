@@ -75,6 +75,9 @@ type draft struct {
 	// and hostMacName what is added to their Wall. They are kept as set
 	// while the sandbox is given no Shared Folder, and so has none.
 	hostTools, hostGPU, hostMacName bool
+	// applications are the rows of the sandbox's Allowed Applications,
+	// kept in the same way.
+	applications []*applicationDraft
 }
 
 // interfaceDraft is one row of the Allowed Interfaces. Its ID is its
@@ -127,6 +130,12 @@ type conditionDraft struct {
 	value string
 }
 
+// applicationDraft is one row of the Allowed Applications: the name of
+// a folder of /Applications.
+type applicationDraft struct {
+	name string
+}
+
 type packDraft struct {
 	manifest pack.Manifest
 	enabled  bool
@@ -164,6 +173,9 @@ func newDraft(cfg sandbox.Config, packs []pack.Manifest) *draft {
 	}
 	for _, h := range cfg.HostConditions {
 		d.conditions = append(d.conditions, &conditionDraft{kind: conditionLabels[h.Kind], value: h.Value})
+	}
+	for _, name := range cfg.HostTools.Applications {
+		d.applications = append(d.applications, &applicationDraft{name: name})
 	}
 	enabled := map[string]bool{}
 	for _, name := range cfg.Packs {
@@ -270,6 +282,9 @@ func (d *draft) config(base sandbox.Config) (sandbox.Config, []sandbox.FieldErro
 	cfg.HostTools = sandbox.HostTools{}
 	if cfg.SharedFolder != "" && d.hostTools {
 		cfg.HostTools = sandbox.HostTools{Enabled: true, GPU: d.hostGPU, MacName: d.hostMacName}
+		for _, application := range d.applications {
+			cfg.HostTools.Applications = append(cfg.HostTools.Applications, application.name)
+		}
 	}
 	return cfg, errs
 }
@@ -564,6 +579,56 @@ func (v *sandboxView) sharedFolderField(c *ui.Context, row formRow) {
 	}).Error(errorOn(v.errs, sandbox.FieldSharedFolder))
 }
 
+// allowedApplicationRows are the sandbox's Allowed Applications: what
+// they are, with the control that adds a row while a folder of this
+// Mac's /Applications is left to name; and under it a row for each, a
+// choice among the folders that no other row holds, with the one it
+// holds though it is there no longer.
+func (v *sandboxView) allowedApplicationRows(c *ui.Context, row formRow) {
+	d := v.draft
+	offered := v.d.backend.Applications()
+	held := func(name string, but int) bool {
+		for i, application := range d.applications {
+			if i != but && application.name == name {
+				return true
+			}
+		}
+		return false
+	}
+	next := ""
+	for _, name := range offered {
+		if !held(name, -1) {
+			next = name
+			break
+		}
+	}
+	row("Allowed Applications", allowedApplicationsHelp, ui.Center, func() {
+		ui.Text(c, "Allowed Applications").Grow(1)
+		if next != "" && glyphButton(c, "host-tools-application-add", glyphAdd, "Add Allowed Application").Clicked() {
+			d.applications = append(d.applications, &applicationDraft{name: next})
+		}
+	})
+	for i, application := range d.applications {
+		n := fmt.Sprint(i + 1)
+		choices := []string{}
+		for _, name := range offered {
+			if !held(name, i) {
+				choices = append(choices, name)
+			}
+		}
+		if !slices.Contains(choices, application.name) {
+			choices = append(choices, application.name)
+		}
+		row("", "", ui.Center, func() {
+			c.Key("host-tools-application-" + n)
+			ui.Select(c, &application.name, choices).Label("Allowed Application " + n).Grow(1)
+			if glyphButton(c, "host-tools-application-remove-"+n, glyphRemove, "Remove Allowed Application "+n).Clicked() {
+				d.applications = append(d.applications[:i:i], d.applications[i+1:]...)
+			}
+		})
+	}
+}
+
 // sharedFolderHelp says what a Shared Folder is, where it is and who
 // else has it.
 func sharedFolderHelp(root string) string {
@@ -573,9 +638,10 @@ func sharedFolderHelp(root string) string {
 // What there is to know of Host Tools, and of what a Setup adds to their
 // Wall.
 const (
-	hostToolsHelp   = "Lets the sandbox's agent run programs of this Mac, whatever is installed, by the tool run of the MCP server macos. Each runs under the Host Tool Wall: it reads this Mac's installed software, which is /Applications, Homebrew and the system's own, reads and writes this Shared Folder and a folder of its own, and has nothing else of this Mac: none of your files, no network, no other program, no window. So the agent learns which applications you have installed, this Mac's model and its chip, and what a program writes fills this Mac's disk, which nothing bounds. Its calls show under MCP Calls. Look at what a program made; do not open it as a program."
-	hostGPUHelp     = "Adds this Mac's GPU to the Wall, with the system's shader compiler and its hardware video encoder and decoder: what Metal and VideoToolbox need. Without it a program works on the CPU. Blender needs it even to start."
-	hostMacNameHelp = "Adds this Mac's name to the Wall. Without it uname fails, and with it whatever asks the platform's name: Python's platform module, numpy, Blender, the Swift compiler. The name often holds its owner's: give this Mac a plain one in System Settings, under Sharing, if that matters."
+	hostToolsHelp           = "Lets the sandbox's agent run programs of this Mac by the tool run of the MCP server macos. Each runs under the Host Tool Wall: it reads the system's own software, Homebrew's and the sandbox's Allowed Applications, reads and writes this Shared Folder and a folder of its own, and has nothing else of this Mac: none of your files, no network, no other program, no window. So the agent learns which packages of Homebrew's you have installed, this Mac's model and its chip, and what a program writes fills this Mac's disk, which nothing bounds. Its calls show under MCP Calls. Look at what a program made; do not open it as a program."
+	hostGPUHelp             = "Adds this Mac's GPU to the Wall, with the system's shader compiler and its hardware video encoder and decoder: what Metal and VideoToolbox need. Without it a program works on the CPU. Blender needs it even to start."
+	allowedApplicationsHelp = "The folders of /Applications that the sandbox's Host Tools read and run. Of any other the Wall tells them nothing, not even whether it is installed, and it lists none. Xcode is one of them: a sandbox that is not given it compiles with the command line tools, where this Mac has them. A link in /Applications is not offered: where it leads is not the Wall's to open."
+	hostMacNameHelp         = "Adds this Mac's name to the Wall. Without it uname fails, and with it whatever asks the platform's name: Python's platform module, numpy, Blender, the Swift compiler. The name often holds its owner's: give this Mac a plain one in System Settings, under Sharing, if that matters."
 )
 
 // packNote says, beside a pack's checkbox, what enabling it means.

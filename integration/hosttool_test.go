@@ -149,7 +149,7 @@ func TestHostTools(t *testing.T) {
 	// What an agent is told of Host Tools, the server tells it as it
 	// meets it, and in its tool's description: no file in the Home does.
 	met, _ := inSandbox(cfg.ID, `printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /usr/local/bin/supervisor mcp-bridge macos; ls -A /workspace`)
-	if strings.Count(met, "Run a program on a Mac, in a restricted macOS environment") != 2 || !strings.Contains(met, "The Mac's GPU is not given") || strings.Contains(met, "AGENTS.md") || strings.Contains(met, "CLAUDE.md") {
+	if strings.Count(met, "Run a program on a Mac, in a restricted macOS environment") != 2 || !strings.Contains(met, "The Mac's GPU is not given") || !strings.Contains(met, "nothing of /Applications") || strings.Contains(met, "AGENTS.md") || strings.Contains(met, "CLAUDE.md") {
 		t.Errorf("the agent is told %s", met)
 	}
 
@@ -178,6 +178,11 @@ func TestHostTools(t *testing.T) {
 	// It is under the Wall: nothing of this Mac's users, and no network.
 	if said, _ := callHostTool(t, cfg.ID, `{"argv":["/bin/ls","/Users"]}`, 5); strings.HasPrefix(said, "Exit status 0.") {
 		t.Errorf("a Host Tool listed this Mac's users: %q", said)
+	}
+	// Nor what this Mac has in /Applications, of which this sandbox is
+	// given nothing.
+	if said, _ := callHostTool(t, cfg.ID, `{"argv":["/bin/ls","/Applications"]}`, 5); strings.HasPrefix(said, "Exit status 0.") {
+		t.Errorf("a Host Tool listed this Mac's applications: %q", said)
 	}
 	if said, _ := callHostTool(t, cfg.ID, `{"argv":["/usr/bin/curl","-sS","-m","3","https://example.com"]}`, 8); strings.HasPrefix(said, "Exit status 0.") {
 		t.Errorf("a Host Tool reached the network: %q", said)

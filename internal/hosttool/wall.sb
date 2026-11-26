@@ -2,7 +2,8 @@
 ;; The Host Tool Wall. A Host Tool is a program of this Mac that a
 ;; sandbox's agent runs: everything is denied it unless a rule below
 ;; allows it. SHARED is the sandbox's Shared Folder and SCRATCH its Host
-;; Tool Scratch; the two are all it writes.
+;; Tool Scratch; the two are all it writes. Of /Applications it has the
+;; sandbox's Allowed Applications, each by a rule the app adds for it.
 (deny default)
 
 ;; --- Processes: its own children, and nothing else of this Mac ----------
@@ -11,7 +12,6 @@
        (subpath "/usr/bin") (subpath "/bin") (subpath "/usr/libexec")
        (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/libexec")
        (subpath "/Library/Developer/CommandLineTools")
-       (subpath "/Applications")
        (subpath (param "SHARED")) (subpath (param "SCRATCH")))
 (allow signal (target same-sandbox))
 ;; What a process may learn of another is not covered by "deny default":
@@ -21,13 +21,12 @@
 (allow process-info-pidinfo (target same-sandbox))
 (allow process-codesigning-status* (target self))
 
-;; --- Reading: the system, the public software, the two folders ----------
+;; --- Reading: the system, Homebrew, the two folders ----------------------
 (allow file-read* file-test-existence file-map-executable
        (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share")
        (subpath "/usr/bin") (subpath "/bin") (subpath "/usr/libexec")
        (subpath "/Library/Apple")
        (subpath "/Library/Developer/CommandLineTools")
-       (subpath "/Applications")
        (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/libexec")
        (subpath "/opt/homebrew/lib") (subpath "/opt/homebrew/share") (subpath "/opt/homebrew/include") (subpath "/opt/homebrew/Frameworks")
        (subpath (param "SHARED")) (subpath (param "SCRATCH")))
@@ -40,8 +39,9 @@
        (literal "/private/var/db/xcode_select_link")
        (literal "/private/var/select/sh"))
 ;; The names of the folders that lead to what may be read, and no
-;; listing of them.
+;; listing of them: what is in /Applications a tool is not told.
 (allow file-read-metadata file-test-existence
+       (literal "/Applications")
        (literal "/etc") (literal "/tmp") (literal "/var") (literal "/private")
        (literal "/private/etc") (literal "/private/var") (literal "/private/tmp")
        (literal "/usr") (literal "/Library") (literal "/Library/Developer") (literal "/opt") (literal "/opt/homebrew")
@@ -78,6 +78,12 @@
 (allow file-read* file-test-existence file-map-executable (subpath "/System/Volumes/Preboot/Cryptexes"))
 (allow file-read-metadata file-test-existence
        (literal "/System/Volumes") (literal "/System/Volumes/Preboot"))
+;; What Homebrew wrote down of an installation, at the top of a package's
+;; folder: its receipt, and the files by which a service of it is
+;; started. They hold paths of the home of whoever installed it, and so
+;; that user's name. No program of the package reads them.
+(deny file-read* file-test-existence
+      (regex #"^/opt/homebrew/Cellar/[^/]+/[^/]+/(INSTALL_RECEIPT\.json|homebrew\.[^/]+\.(plist|service))$"))
 
 ;; --- What "deny default" leaves open, closed by name --------------------
 ;; The hardware's registry holds its serial number, its UUID and its
@@ -88,7 +94,50 @@
 (deny system-info)
 (deny system-privilege)
 (deny system-kext*)
-;; Two calls that no rule above governs: this Mac's hardware UUID, and
-;; the list of everything mounted on it, the names of its disks among it.
+;; Calls that no rule above governs: this Mac's hardware UUID, and the
+;; list of everything mounted on it, the names of its disks among it.
 (deny syscall-unix (syscall-number SYS_gethostuuid))
 (deny syscall-unix (syscall-number SYS_getfsstat) (syscall-number SYS_getfsstat64))
+;; The name its user logged in under.
+(deny syscall-unix (syscall-number SYS_getlogin))
+;; Where a file is, asked by the numbers of its volume and of the file:
+;; a call that takes no path, so that no rule of a path governs it, and
+;; that answers for every file of the volume. By counting, a tool had
+;; the name of everything on this Mac.
+(deny syscall-unix (syscall-number SYS_fsgetpath) (syscall-number SYS_fsgetpath_ext))
+;; The kernel's network policy, by which a program asks how a connection
+;; would leave this Mac.
+(deny syscall-unix
+      (syscall-number SYS_necp_open) (syscall-number SYS_necp_client_action) (syscall-number SYS_necp_match_policy)
+      (syscall-number SYS_necp_session_open) (syscall-number SYS_necp_session_action))
+;; A socket can be made, though nothing is sent on it, and asked about
+;; this Mac's interfaces: which there are, and their addresses. Of a
+;; socket a tool asks only what a pipe would answer.
+(deny socket-ioctl)
+(allow socket-ioctl
+       (ioctl-command FIONBIO) (ioctl-command FIONREAD) (ioctl-command FIOCLEX) (ioctl-command FIONCLEX) (ioctl-command FIOASYNC))
+;; The memory, semaphores and queues that the programs of this Mac's user
+;; share by a number, of which this Mac holds a few dozen at most. The
+;; rules above refuse a tool the ones there are, and to use or remove
+;; one; to make one they do not govern, and what a tool made stayed.
+(deny syscall-unix
+      (syscall-number SYS_shmget) (syscall-number SYS_semget) (syscall-number SYS_msgget)
+      (syscall-number SYS_shmsys) (syscall-number SYS_semsys) (syscall-number SYS_msgsys))
+;; The hardware's registry is asked by messages to the kernel, which no
+;; rule above governs either: a tool walked all of it, and read the name
+;; of every device and interface of this Mac. A tool does not get the
+;; port those messages go to. With the GPU it does, to find the graphics
+;; device by its class; what walks the registry, and what names a device,
+;; its place or its class, is refused then too.
+(deny syscall-mig (kernel-mig-routine host_get_io_master))
+(deny syscall-mig
+      (kernel-mig-routine
+       io_registry_get_root_entry io_registry_create_iterator io_registry_entry_create_iterator
+       io_registry_iterator_enter_entry io_registry_iterator_exit_entry
+       io_registry_entry_from_path io_registry_entry_from_path_ool
+       io_registry_entry_get_name io_registry_entry_get_name_in_plane
+       io_registry_entry_get_path io_registry_entry_get_path_ool io_registry_entry_get_location_in_plane
+       io_registry_entry_get_child_iterator io_registry_entry_get_parent_iterator io_registry_entry_in_plane
+       io_registry_entry_get_registry_entry_id
+       io_object_get_class io_object_get_superclass io_object_get_bundle_identifier
+       io_catalog_get_data io_catalog_get_gen_count))

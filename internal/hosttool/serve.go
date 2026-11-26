@@ -29,9 +29,14 @@ type Served struct {
 }
 
 // Serve readies the Host Tools of one sandbox: its Host Tool Scratch,
-// and with the GPU the Homebrew Wrappers. Until Close, the sandbox's
-// Scratch is not deleted.
+// and with the GPU the Homebrew Wrappers. Its Allowed Applications are
+// looked at once more: none is given that is not a folder of
+// /Applications itself. Until Close, the sandbox's Scratch is not
+// deleted.
 func (t *Tools) Serve(s Settings) (*Served, error) {
+	if err := t.CheckApplications(s.Applications); err != nil {
+		return nil, err
+	}
 	sc, err := t.prepare(s.SandboxID)
 	if err != nil {
 		return nil, err

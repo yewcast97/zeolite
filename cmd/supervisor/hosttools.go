@@ -71,12 +71,26 @@ func hostToolWords(notice sandbox.HostToolsNotice) string {
 		fmt.Sprintf("It answers with the start of what the program printed, %d KiB of each stream. Send long output to a file.", sandbox.HostToolMaxOutput>>10),
 		"Of your files the program sees " + shared + " and nothing else. The Mac has that folder under another path, which is where the program starts: " +
 			"name files from there, put there what the program needs, and find there what it made. It has a home and a temporary folder of its own, which you do not see.",
-		"It reads what is installed on the Mac: /Applications, Homebrew under /opt/homebrew, the system's tools and its compilers. " +
+		"It reads what is installed on the Mac: Homebrew under /opt/homebrew, the system's tools and its compilers, " + hostToolApplications(notice.Applications) + " " +
 			"It has no network, no other file of the Mac and no window: have a program write pictures, and look at those.",
 		"What is not installed on the Mac, fetch yourself, built for macOS, into " + shared + ": a program runs from there. It cannot fetch anything itself.",
 		gpu,
 		name,
 	}, "\n\n")
+}
+
+// hostToolApplications ends the sentence that says what a program reads
+// of what is installed: of /Applications, the folders the sandbox is
+// given, by their paths, and that there is nothing else there for it.
+func hostToolApplications(names []string) string {
+	if len(names) == 0 {
+		return "and nothing of /Applications: ask your user for an application you need."
+	}
+	paths := make([]string, len(names))
+	for i, name := range names {
+		paths[i] = "/Applications/" + name
+	}
+	return "and of /Applications these and nothing else: " + strings.Join(paths, ", ") + ". Ask your user for another."
 }
 
 // hostToolRunSchema is the tool's arguments, as JSON Schema.

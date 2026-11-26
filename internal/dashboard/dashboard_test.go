@@ -35,10 +35,12 @@ type fakeBackend struct {
 	// folders are the Shared Folders on the disk, removed the ones that
 	// were deleted, shown the ones shown in the Finder, and removeErr
 	// what deleting one answers.
-	folders   []string
-	removed   []string
-	shown     []string
-	removeErr error
+	folders []string
+	// applications are the folders of this Mac's /Applications.
+	applications []string
+	removed      []string
+	shown        []string
+	removeErr    error
 	// did is what was asked of the backend that changes something, in
 	// order: "stop s1", "remove-home s1", "remove-scratch s1", "remove
 	// research", "save".
@@ -130,6 +132,8 @@ func (b *fakeBackend) RemoveHostToolScratch(id string) error {
 	b.did = append(b.did, "remove-scratch "+id)
 	return b.scratchErr
 }
+
+func (b *fakeBackend) Applications() []string { return b.applications }
 
 func (b *fakeBackend) SharedFolders() ([]string, error) {
 	b.mu.Lock()
@@ -1571,12 +1575,12 @@ func TestHostToolsInTheSetup(t *testing.T) {
 	// Set while the sandbox is given no Shared Folder, they are not the
 	// sandbox's.
 	d.hostTools, d.hostGPU = true, true
-	if back, errs := d.config(cfg); len(errs) != 0 || back.HostTools != (sandbox.HostTools{}) {
+	if back, errs := d.config(cfg); len(errs) != 0 || !reflect.DeepEqual(back.HostTools, sandbox.HostTools{}) {
 		t.Errorf("with no Shared Folder the sandbox is given %+v (%v)", back.HostTools, errs)
 	}
 	d.folderChoice = "research"
 	back, errs := d.config(cfg)
-	if len(errs) != 0 || back.HostTools != (sandbox.HostTools{Enabled: true, GPU: true}) || len(back.Validate()) != 0 {
+	if len(errs) != 0 || !reflect.DeepEqual(back.HostTools, sandbox.HostTools{Enabled: true, GPU: true}) || len(back.Validate()) != 0 {
 		t.Errorf("in a Shared Folder the sandbox is given %+v (%v, %v)", back.HostTools, errs, back.Validate())
 	}
 	if again := newDraft(back, nil); !again.hostTools || !again.hostGPU || again.hostMacName {
@@ -1584,7 +1588,7 @@ func TestHostToolsInTheSetup(t *testing.T) {
 	}
 	// Without Host Tools nothing is added to a Wall.
 	d.hostTools, d.hostMacName = false, true
-	if back, _ := d.config(cfg); back.HostTools != (sandbox.HostTools{}) {
+	if back, _ := d.config(cfg); !reflect.DeepEqual(back.HostTools, sandbox.HostTools{}) {
 		t.Errorf("without Host Tools the sandbox is given %+v", back.HostTools)
 	}
 
@@ -1598,13 +1602,18 @@ func TestHostToolsInTheSetup(t *testing.T) {
 	}
 	texts := h.told("About Host Tools")
 	for _, want := range []string{
-		"by the tool run of the MCP server macos", "under the Host Tool Wall", "/Applications, Homebrew and the system's own",
-		"none of your files, no network, no other program, no window", "which applications you have installed",
+		"by the tool run of the MCP server macos", "under the Host Tool Wall", "the system's own software, Homebrew's and the sandbox's Allowed Applications",
+		"none of your files, no network, no other program, no window", "which packages of Homebrew's you have installed",
 		"fills this Mac's disk, which nothing bounds", "do not open it as a program",
 	} {
 		if !strings.Contains(texts, want) {
 			t.Errorf("what is said of Host Tools lacks %q: %s", want, texts)
 		}
+	}
+	// It no longer says that the agent learns what is in /Applications:
+	// of that a tool is given what the Setup names.
+	if strings.Contains(texts, "which applications you have installed") || strings.Contains(texts, "whatever is installed") {
+		t.Errorf("what is said of Host Tools still gives it /Applications: %s", texts)
 	}
 	h.park()
 	h.click("Run this Mac's programs in the folder")
@@ -1619,7 +1628,7 @@ func TestHostToolsInTheSetup(t *testing.T) {
 	saves := len(h.backend.saved)
 	h.click("Save")
 	h.settle("the config to be saved", func() bool { return len(h.backend.saved) == saves+1 })
-	if got := h.backend.lastSaved()[0]; got.SharedFolder != "research" || got.HostTools != (sandbox.HostTools{Enabled: true, GPU: true}) {
+	if got := h.backend.lastSaved()[0]; got.SharedFolder != "research" || !reflect.DeepEqual(got.HostTools, sandbox.HostTools{Enabled: true, GPU: true}) {
 		t.Errorf("saved %+v", got)
 	}
 
@@ -1631,8 +1640,90 @@ func TestHostToolsInTheSetup(t *testing.T) {
 	}
 	h.click("Save")
 	h.settle("the config to be saved again", func() bool { return len(h.backend.saved) == saves+2 })
-	if got := h.backend.lastSaved()[0]; got.SharedFolder != "" || got.HostTools != (sandbox.HostTools{}) {
+	if got := h.backend.lastSaved()[0]; got.SharedFolder != "" || !reflect.DeepEqual(got.HostTools, sandbox.HostTools{}) {
 		t.Errorf("with no Shared Folder again, saved %+v", got)
+	}
+}
+
+// A sandbox's Allowed Applications are rows of its Setup, under its Host
+// Tools: each a choice among the folders of this Mac's /Applications
+// that no other row holds; one is added while a folder is left to name,
+// and removed by its own glyph. They are the sandbox's only with Host
+// Tools.
+func TestAllowedApplicationsInTheSetup(t *testing.T) {
+	cfg := gated("s1", "Research")
+	d := newDraft(cfg, nil)
+	if len(d.applications) != 0 {
+		t.Errorf("a new sandbox's form gives it applications: %+v", d.applications)
+	}
+	d.folderChoice, d.hostTools = "research", true
+	d.applications = []*applicationDraft{{name: "Blender.app"}, {name: "Xcode.app"}}
+	back, errs := d.config(cfg)
+	if want := (sandbox.HostTools{Enabled: true, Applications: []string{"Blender.app", "Xcode.app"}}); len(errs) != 0 || !reflect.DeepEqual(back.HostTools, want) || len(back.Validate()) != 0 {
+		t.Errorf("the form gives the sandbox %+v (%v, %v)", back.HostTools, errs, back.Validate())
+	}
+	if again := newDraft(back, nil); len(again.applications) != 2 || again.applications[0].name != "Blender.app" || again.applications[1].name != "Xcode.app" {
+		t.Errorf("a sandbox given two applications shows %+v", again.applications)
+	}
+	// Without Host Tools the sandbox has none of them.
+	d.hostTools = false
+	if back, _ := d.config(cfg); !reflect.DeepEqual(back.HostTools, sandbox.HostTools{}) {
+		t.Errorf("without Host Tools the sandbox is given %+v", back.HostTools)
+	}
+
+	h := newHarness(t, []sandbox.Config{cfg})
+	h.backend.applications = []string{"Blender.app", "Preview Tools", "Xcode.app"}
+	h.giveFolder("research")
+	if h.tt.HasText("Allowed Applications") {
+		t.Fatalf("without Host Tools the Setup shows %q", h.tt.Texts())
+	}
+	h.click("Run this Mac's programs in the folder")
+	if !h.tt.HasText("Allowed Applications") || h.count("Allowed Application 1") != 0 {
+		t.Fatalf("with Host Tools the Setup shows %q", h.tt.Texts())
+	}
+	texts := h.told("About Allowed Applications")
+	for _, want := range []string{"folders of /Applications", "not even whether it is installed", "Xcode is one of them", "A link in /Applications is not offered"} {
+		if !strings.Contains(texts, want) {
+			t.Errorf("what is said of the Allowed Applications lacks %q: %s", want, texts)
+		}
+	}
+	h.park()
+
+	// A row is added with the first folder no row holds, and offers
+	// what the others do not hold.
+	h.click("Add Allowed Application")
+	h.click("Add Allowed Application")
+	draft := h.d.view("s1").draft
+	if len(draft.applications) != 2 || draft.applications[0].name != "Blender.app" || draft.applications[1].name != "Preview Tools" {
+		t.Fatalf("two rows added hold %+v", draft.applications)
+	}
+	h.choose("Allowed Application 2", []string{"Preview Tools", "Xcode.app"}, "Xcode.app")
+	if draft.applications[1].name != "Xcode.app" {
+		t.Fatalf("the second row holds %q, want Xcode.app", draft.applications[1].name)
+	}
+	// With every folder named, there is none to add.
+	h.click("Add Allowed Application")
+	if len(draft.applications) != 3 || draft.applications[2].name != "Preview Tools" {
+		t.Fatalf("a third row holds %+v", draft.applications)
+	}
+	if err := h.tt.Click("Add Allowed Application"); err == nil {
+		t.Error("with every folder named the Setup still adds a row")
+	}
+	h.click("Remove Allowed Application 3")
+	h.click("Remove Allowed Application 1")
+	saves := len(h.backend.saved)
+	h.click("Save")
+	h.settle("the config to be saved", func() bool { return len(h.backend.saved) == saves+1 })
+	if got, want := h.backend.lastSaved()[0].HostTools, (sandbox.HostTools{Enabled: true, Applications: []string{"Xcode.app"}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("saved %+v, want %+v", got, want)
+	}
+
+	// One that is in /Applications no longer is still shown, to be
+	// removed: its row holds it.
+	h.backend.applications = []string{"Blender.app"}
+	h.tt.Frame()
+	if draft.applications[0].name != "Xcode.app" || h.count("Allowed Application 1") == 0 {
+		t.Errorf("a row whose folder is gone holds %+v", draft.applications)
 	}
 }
 

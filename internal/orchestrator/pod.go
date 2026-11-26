@@ -842,7 +842,7 @@ func (o *Orchestrator) startWorkstation(ctx, podCtx context.Context, p *pod, ima
 	if cfg.HostTools.Enabled {
 		// The supervisor registers the server by which the agent runs
 		// Host Tools, and tells the agent what their Wall was given.
-		supervisor.HostTools = &sandbox.HostToolsNotice{GPU: cfg.HostTools.GPU, MacName: cfg.HostTools.MacName}
+		supervisor.HostTools = &sandbox.HostToolsNotice{GPU: cfg.HostTools.GPU, MacName: cfg.HostTools.MacName, Applications: cfg.HostTools.Applications}
 	}
 	env := []string{"TZ=" + timezone}
 	// Where an agent that is sent to a registry of the app's own finds it.

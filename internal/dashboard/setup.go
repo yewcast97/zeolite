@@ -129,6 +129,7 @@ func (v *sandboxView) setupView(c *ui.Context) {
 										c.Key("host-tools-name")
 										ui.Checkbox(c, &d.hostMacName, "With this Mac's name")
 									})
+									v.allowedApplicationRows(c, row)
 								}
 							})
 						}).Error(errorOn(v.errs, sandbox.FieldHostTools))

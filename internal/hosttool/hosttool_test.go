@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -25,10 +26,13 @@ import (
 // prints what came of each.
 const (
 	probeEnv       = "ZEOLITE_WALL_PROBE"
-	probeCanaryEnv = "ZEOLITE_PROBE_CANARY"   // a file outside the Wall
-	probeOutEnv    = "ZEOLITE_PROBE_OUTSIDE"  // a folder outside the Wall
-	probeHomeEnv   = "ZEOLITE_PROBE_USERHOME" // the user's home
-	probeDialEnv   = "ZEOLITE_PROBE_LISTENER" // an address this Mac listens on
+	probeCanaryEnv = "ZEOLITE_PROBE_CANARY"     // a file outside the Wall
+	probeOutEnv    = "ZEOLITE_PROBE_OUTSIDE"    // a folder outside the Wall
+	probeHomeEnv   = "ZEOLITE_PROBE_USERHOME"   // the user's home
+	probeDialEnv   = "ZEOLITE_PROBE_LISTENER"   // an address this Mac listens on
+	probeNumberEnv = "ZEOLITE_PROBE_FILENUMBER" // the volume and the number of the file outside the Wall
+	probeGivenEnv  = "ZEOLITE_PROBE_GIVEN"      // a file of an Allowed Application
+	probeOtherEnv  = "ZEOLITE_PROBE_NOTGIVEN"   // a file of an application that is not one
 )
 
 func TestMain(m *testing.M) {
@@ -86,6 +90,16 @@ func probe() {
 	say("run-a-setuid-program", exec.Command("/bin/ps").Run())
 	_, err = os.ReadDir("/Applications")
 	say("list-the-applications", err)
+	_, err = os.ReadFile(os.Getenv(probeOtherEnv))
+	say("read-an-application-not-given", err)
+	_, err = os.ReadFile(os.Getenv(probeGivenEnv))
+	say("read-an-allowed-application", err)
+	say("run-an-allowed-application", exec.Command(os.Getenv(probeGivenEnv)).Run())
+	say("this-users-login-name", loginName())
+	say("name-a-file-by-its-number", pathByNumber(os.Getenv(probeNumberEnv)))
+	say("ask-a-socket-of-an-interface", interfaceBySocket())
+	say("open-the-network-policy", networkPolicy())
+	say("make-shared-memory-of-this-macs", sharedMemory())
 	say("run-a-system-program", exec.Command("/bin/ls").Run())
 	say("write-in-the-shared-folder", os.WriteFile("written-by-a-host-tool", []byte("x"), 0o600))
 	say("write-in-the-home", os.WriteFile(filepath.Join(os.Getenv("HOME"), "written"), []byte("x"), 0o600))
@@ -96,11 +110,81 @@ func probe() {
 	say("write-a-temporary-file", err)
 }
 
+// loginName asks the kernel for the name the user logged in under.
+func loginName() error {
+	name := make([]byte, 256)
+	if _, _, errno := unix.Syscall(unix.SYS_GETLOGIN, uintptr(unsafe.Pointer(&name[0])), uintptr(len(name)), 0); errno != 0 {
+		return errno
+	}
+	if name[0] == 0 {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
+// pathByNumber asks the kernel where a file is, by the numbers of its
+// volume and of the file: a call that takes no path, of a file the
+// tool may not read.
+func pathByNumber(numbers string) error {
+	var volume, file uint64
+	if _, err := fmt.Sscan(numbers, &volume, &file); err != nil {
+		return err
+	}
+	fsid := [2]int32{int32(volume), 0}
+	path := make([]byte, 4096)
+	n, _, errno := unix.Syscall6(unix.SYS_FSGETPATH, uintptr(unsafe.Pointer(&path[0])), uintptr(len(path)), uintptr(unsafe.Pointer(&fsid)), uintptr(file), 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	if int(n) <= 1 {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
+// interfaceBySocket asks a socket, which sends nothing, about one of
+// this Mac's interfaces: the loopback, which every Mac has.
+func interfaceBySocket() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	_, err = unix.IoctlGetIfreqMTU(fd, "lo0")
+	return err
+}
+
+// networkPolicy opens the kernel's network policy, by which a program
+// asks how a connection would leave this Mac.
+func networkPolicy() error {
+	const necpOpen = 501
+	fd, _, errno := unix.Syscall(necpOpen, 0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	unix.Close(int(fd))
+	return nil
+}
+
+// sharedMemory makes a piece of the memory that every program of this
+// Mac's user shares by a number, and removes it where it can: under a
+// Wall that let it be made it could not be removed, and it stayed until
+// the run with no Wall, which makes it again, removed it.
+func sharedMemory() error {
+	id, err := unix.SysvShmGet(0x5a454f31, 4096, unix.IPC_CREAT|0o600)
+	if err != nil {
+		return err
+	}
+	unix.SysvShmCtl(id, unix.IPC_RMID, nil)
+	return nil
+}
+
 // walled is a Tools on folders of the test's, with a sandbox's Shared
 // Folder, and what the probes need outside the Wall.
 type walled struct {
 	t        *testing.T
 	tools    *Tools
+	base     string // the test's own folder, as Seatbelt names it
 	shared   string // the Shared Folder, as Seatbelt names it
 	outside  string
 	canary   string
@@ -117,7 +201,7 @@ func newWalled(t *testing.T) *walled {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := &walled{t: t, tools: tools, shared: filepath.Join(base, "shared", "research"), outside: filepath.Join(base, "outside")}
+	w := &walled{t: t, tools: tools, base: base, shared: filepath.Join(base, "shared", "research"), outside: filepath.Join(base, "outside")}
 	for _, dir := range []string{w.shared, w.outside} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -129,6 +213,27 @@ func newWalled(t *testing.T) *walled {
 	}
 	w.settings = Settings{SandboxID: "s1", SharedFolder: w.shared}
 	return w
+}
+
+// ownApplications gives the Tools a folder of applications of the
+// test's own, in place of this Mac's, with a program in each: the
+// compilers are then the command line tools', as for a sandbox that is
+// not given Xcode. It returns the program of the application named.
+func (w *walled) ownApplications(names ...string) func(name string) string {
+	w.t.Helper()
+	dir := filepath.Join(w.base, "applications")
+	program := func(name string) string { return filepath.Join(dir, name, "Contents", "MacOS", "tool") }
+	for _, name := range names {
+		if err := os.MkdirAll(filepath.Dir(program(name)), 0o755); err != nil {
+			w.t.Fatal(err)
+		}
+		if err := os.WriteFile(program(name), []byte("#!/bin/sh\necho a tool of "+name+"\n"), 0o755); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+	w.tools.applicationsDir = dir
+	w.tools.findCompilers()
+	return program
 }
 
 // probeProgram puts this test's program in the Shared Folder, where a
@@ -188,12 +293,22 @@ func TestTheWallRefusesThisMac(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Two applications, of which the sandbox is given one.
+	program := w.ownApplications("Given.app", "Other.app")
+	w.settings.Applications = []string{"Given.app"}
+	var canary unix.Stat_t
+	if err := unix.Stat(w.canary, &canary); err != nil {
+		t.Fatal(err)
+	}
 	env := map[string]string{
 		probeEnv:       "1",
 		probeCanaryEnv: w.canary,
 		probeOutEnv:    w.outside,
 		probeHomeEnv:   home,
 		probeDialEnv:   listener.Addr().String(),
+		probeNumberEnv: fmt.Sprintf("%d %d", canary.Dev, canary.Ino),
+		probeGivenEnv:  program("Given.app"),
+		probeOtherEnv:  program("Other.app"),
 	}
 	lines := func(out string) map[string]string {
 		got := map[string]string{}
@@ -208,9 +323,13 @@ func TestTheWallRefusesThisMac(t *testing.T) {
 	refused := []string{
 		"read-a-file-outside", "list-the-users-home", "write-outside", "connect-to-this-mac", "listen",
 		"this-macs-name", "name-another-process", "list-the-boot-volume", "list-the-data-volume", "run-a-setuid-program",
+		"list-the-applications", "read-an-application-not-given",
+		"this-users-login-name", "name-a-file-by-its-number", "ask-a-socket-of-an-interface", "open-the-network-policy",
+		"make-shared-memory-of-this-macs",
 	}
 	allowed := []string{
-		"list-the-applications", "run-a-system-program", "write-in-the-shared-folder", "write-in-the-home", "write-a-temporary-file",
+		"read-an-allowed-application", "run-an-allowed-application",
+		"run-a-system-program", "write-in-the-shared-folder", "write-in-the-home", "write-a-temporary-file",
 	}
 
 	request := w.probeProgram(env)
@@ -249,6 +368,20 @@ func TestTheWallRefusesThisMac(t *testing.T) {
 	named.MacName = true
 	if got := lines(w.run(named, request).Stdout); got["this-macs-name"] != "ok" || got["name-another-process"] != "refused" || got["read-a-file-outside"] != "refused" {
 		t.Errorf("with this Mac's name added, the probe says %v", got)
+	}
+
+	// A sandbox that is given no application reads none, and one that
+	// is given the other reads that one: a rule names its application
+	// by a parameter, whatever its place in the list.
+	none := w.settings
+	none.Applications = nil
+	if got := lines(w.run(none, request).Stdout); got["read-an-allowed-application"] != "refused" || got["run-an-allowed-application"] != "refused" || got["read-an-application-not-given"] != "refused" {
+		t.Errorf("with no Allowed Application, the probe says %v", got)
+	}
+	both := w.settings
+	both.Applications = []string{"Other.app", "Given.app"}
+	if got := lines(w.run(both, request).Stdout); got["read-an-allowed-application"] != "ok" || got["read-an-application-not-given"] != "ok" || got["list-the-applications"] != "refused" {
+		t.Errorf("with both applications given, the probe says %v", got)
 	}
 
 	// The control: with no Wall, everything the probe tries is done.
@@ -297,11 +430,16 @@ func TestAHostToolsEnvironmentIsItsOwn(t *testing.T) {
 		"HOME": sc.home, "TMPDIR": sc.tmp + "/", "XDG_CACHE_HOME": sc.cache, "TZ": "UTC", "LANG": "en_US.UTF-8",
 		"PATH": w.tools.path(w.settings), "GOFLAGS": "-mod=mod", probeEnv: "environment",
 	}
-	if w.tools.developerDir != "" {
-		want["DEVELOPER_DIR"] = w.tools.developerDir
-	}
-	if w.tools.sdk != "" {
-		want["SDKROOT"] = w.tools.sdk
+	// No Allowed Application, so not Xcode: the compilers are the
+	// command line tools'.
+	if compilers := w.tools.compilersOf(w.settings); compilers.developerDir != "" {
+		want["DEVELOPER_DIR"] = compilers.developerDir
+		if compilers.sdk != "" {
+			want["SDKROOT"] = compilers.sdk
+		}
+		if strings.HasPrefix(compilers.developerDir, "/Applications/") {
+			t.Errorf("a sandbox that is not given Xcode has its compilers: %+v", compilers)
+		}
 	}
 	for name, value := range want {
 		if got[name] != value {

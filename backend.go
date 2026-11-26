@@ -276,6 +276,13 @@ func (b *backend) Start(cfg sandbox.Config) error {
 		if cfg.HostTools.Enabled && b.noHostTools != nil {
 			return fmt.Errorf("the sandbox is given Host Tools, which cannot be run: %w", b.noHostTools)
 		}
+		if cfg.HostTools.Enabled {
+			// Said here, where the sandbox's user reads it: its Host
+			// Tools would be refused for it later, and say nothing.
+			if err := b.hostTools.CheckApplications(cfg.HostTools.Applications); err != nil {
+				return fmt.Errorf("the sandbox's Host Tools: %w", err)
+			}
+		}
 	}
 	opts.Link = b.link(cfg, opts.SharedFolder)
 	// The first start of a set of packs builds their image.
@@ -294,7 +301,7 @@ func (b *backend) link(cfg sandbox.Config, sharedFolder string) func(io.ReadWrit
 	return func(stream io.ReadWriteCloser) {
 		handlers := link.Handlers{Hand: func(r sandbox.HandRequest) string { return b.raiseHand(cfg.ID, r.Session) }}
 		if cfg.HostTools.Enabled {
-			settings := hosttool.Settings{SandboxID: cfg.ID, SharedFolder: sharedFolder, GPU: cfg.HostTools.GPU, MacName: cfg.HostTools.MacName}
+			settings := hosttool.Settings{SandboxID: cfg.ID, SharedFolder: sharedFolder, GPU: cfg.HostTools.GPU, MacName: cfg.HostTools.MacName, Applications: cfg.HostTools.Applications}
 			served, err := b.hostTools.Serve(settings)
 			if err != nil {
 				// Why is the app's to say to its user, here: an agent is
@@ -326,6 +333,20 @@ func (b *backend) raiseHand(sandboxID, sessionID string) (refused string) {
 	}
 	b.tell(sandbox.Update{SandboxID: sandboxID, Hand: &sandbox.Hand{Session: sessionID}})
 	return ""
+}
+
+// Applications lists the folders of this Mac's /Applications, by name:
+// what a Setup can name as a sandbox's Allowed Applications. There are
+// none where Host Tools cannot be run.
+func (b *backend) Applications() []string {
+	if b.noHostTools != nil {
+		return nil
+	}
+	names, err := b.hostTools.Applications()
+	if err != nil {
+		return nil
+	}
+	return names
 }
 
 // SharedFolders lists the Shared Folders on this Mac's disk, by name.

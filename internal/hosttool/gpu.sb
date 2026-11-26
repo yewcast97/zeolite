@@ -1,17 +1,23 @@
 ;; The GPU, for a sandbox whose Host Tools are given it: this Mac's
 ;; graphics device and the surfaces drawn on it. No window, no display,
 ;; no other device.
+;; The port by which the hardware's registry is asked, which the Wall
+;; refuses: Metal finds the graphics device there, by its class.
+(allow syscall-mig (kernel-mig-routine host_get_io_master))
 (allow iokit-open
        (iokit-user-client-class "AGXDeviceUserClient" "AGXSharedUserClient" "IOSurfaceRootUserClient" "IOSurfaceAcceleratorClient"))
 (allow iokit-open-service (iokit-registry-entry-class "IOAccelerator" "IOSurfaceRoot"))
 (allow iokit-open-user-client (iokit-connection "IOAccelerator")
        (iokit-user-client-class "IOAccelerationUserClient" "IOSurfaceSendRight"))
 ;; What Metal reads of the graphics device to find its driver: these
-;; properties, which say nothing of this Mac but its chip.
+;; properties, which say nothing of this Mac but its chip, and of the
+;; graphics device and its surfaces alone. Every driver has the first of
+;; them: asked of any device, they named the class of each.
 (allow iokit-get-properties
-       (iokit-property "MetalPluginName" "MetalPluginClassName" "MetalStatisticsName" "MetalCoalesce"
-                       "IOGLBundleName" "IOGLESBundleName" "IOClassNameOverride" "IOClass" "IOProviderClass"
-                       "IOMatchCategory" "IOSourceVersion" "GPUConfigurationVariable" "PerformanceStatistics" "IOSurfaceAcceleratorCapabilitiesDict"))
+       (require-all (iokit-registry-entry-class "IOAccelerator" "IOSurfaceRoot")
+                    (iokit-property "MetalPluginName" "MetalPluginClassName" "MetalStatisticsName" "MetalCoalesce"
+                                    "IOGLBundleName" "IOGLESBundleName" "IOClassNameOverride" "IOClass" "IOProviderClass"
+                                    "IOMatchCategory" "IOSourceVersion" "GPUConfigurationVariable" "PerformanceStatistics" "IOSurfaceAcceleratorCapabilitiesDict")))
 (allow sysctl-read (sysctl-name "hw.cpusubfamily" "kern.hv_vmm_present"))
 (allow user-preference-read (preference-domain "com.apple.gpu") (preference-domain "com.apple.Metal"))
 (allow mach-lookup (global-name "com.apple.gpumemd.source") (global-name "com.apple.cvmsServ"))
@@ -35,10 +41,11 @@
 ;; issues: whatever folder the extension names, the compiler then has,
 ;; and it prints what it could not compile. So a tool issues one for what
 ;; it may itself read, and to write for its two folders, and for nothing
-;; else: Metal asks for all of "/", and is refused.
+;; else: Metal asks for all of "/", and is refused. For an Allowed
+;; Application the app adds a rule of this kind, to read.
 (allow file-issue-extension
        (require-all (extension-class "com.apple.app-sandbox.read")
-                    (require-any (subpath "/Applications") (subpath (param "SHARED")) (subpath (param "SCRATCH")))))
+                    (require-any (subpath (param "SHARED")) (subpath (param "SCRATCH")))))
 (allow file-issue-extension
        (require-all (extension-class "com.apple.app-sandbox.read-write")
                     (require-any (subpath (param "SHARED")) (subpath (param "SCRATCH")))))
