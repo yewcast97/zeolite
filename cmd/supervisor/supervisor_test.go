@@ -84,8 +84,10 @@ func TestStatSession(t *testing.T) {
 }
 
 // A Terminal Session is a login shell and nothing else: its command line
-// is one word, which no request can add to, and the supervisor has no
-// command that gives a shell text to read or a program to start.
+// is one word, which no request can add to, and what starts it gives a
+// shell no text to read and no program to start. The supervisor's one
+// command that gives a shell a text is the ACP Bridge's, and that text
+// is fixed.
 func TestASessionIsALoginShell(t *testing.T) {
 	if len(shellArgv) != 1 || shellArgv[0] != "-bash" {
 		t.Errorf("a session's shell is %q, want a login shell alone", shellArgv)

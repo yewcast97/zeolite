@@ -109,7 +109,7 @@ func TestOnlyTheAppReachesTheSharedFolder(t *testing.T) {
 // startsPrograms are the packages that start a program, and what for.
 var startsPrograms = map[string]string{
 	"cmd/gatekeeper":     "nft, in the gatekeeper's container",
-	"cmd/supervisor":     "the packs' daemons and the MCP servers an agent's client asks for, in the workstation",
+	"cmd/supervisor":     "the packs' daemons, the MCP servers an agent's client asks for and the agent an ACP Bridge's client named, in the workstation",
 	"internal/carrier":   "a sandbox's Carrier, under the Carrier Wall",
 	"internal/hosttool":  "a sandbox's Host Tools, under the Host Tool Wall",
 	"internal/hostwatch": "ipconfig, to read the Wi-Fi network for a Host Condition, and networksetup, to read what the system calls this Mac's interfaces",

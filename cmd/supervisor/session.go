@@ -76,17 +76,29 @@ func hangup(id string) error {
 		return fmt.Errorf("session %s has no process recorded", id)
 	}
 
+	endSession(leader)
+	return nil
+}
+
+// endSession ends every process whose session a process leads: each
+// gets SIGHUP, as when a terminal closes, and SIGKILL if it stays. A
+// process that made a session of its own is no longer of this one, and
+// is not found.
+func endSession(leader int) {
 	signalSession(leader, syscall.SIGHUP)
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(sessionGrace)
 	for time.Now().Before(deadline) {
 		if len(sessionMembers(leader)) == 0 {
-			return nil
+			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	signalSession(leader, syscall.SIGKILL)
-	return nil
 }
+
+// sessionGrace is how long a session's processes have to end after
+// SIGHUP.
+var sessionGrace = 2 * time.Second
 
 func signalSession(leader int, sig syscall.Signal) {
 	for _, pid := range sessionMembers(leader) {

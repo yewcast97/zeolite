@@ -4,6 +4,7 @@
 //	supervisor mcp-bridge <name>         runs the sandbox's MCP server of that name, logging what crosses it
 //	supervisor shell <session-id>        becomes a login shell, recorded as a Terminal Session
 //	supervisor hangup <session-id>       ends a Terminal Session
+//	supervisor acp <program> [args...]   starts an agent for the sandbox's ACP Bridge, on this command's standard streams
 //	supervisor link                      carries what the workstation asks of the app, which runs it: the sandbox's Link
 //	supervisor host-tools                is the MCP server by which an agent runs Host Tools
 //	supervisor state                     is the MCP server by which an agent tells its user of its state
@@ -28,6 +29,8 @@ func main() {
 		err = shell(args[1])
 	case len(args) == 2 && args[0] == "hangup":
 		err = hangup(args[1])
+	case len(args) >= 2 && args[0] == "acp":
+		os.Exit(acp(args[1], args[2:], os.Stdin, os.Stdout))
 	case len(args) == 1 && args[0] == "link":
 		err = link(linkSocket, os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "host-tools":
@@ -42,7 +45,7 @@ func main() {
 	case len(args) == 1 && args[0] == "state":
 		err = stateServer(linkSocket, ownSession).serve(os.Stdin, os.Stdout)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: supervisor run | mcp-bridge <name> | shell <session-id> | hangup <session-id> | link | host-tools | state")
+		fmt.Fprintln(os.Stderr, "usage: supervisor run | mcp-bridge <name> | shell <session-id> | hangup <session-id> | acp <program> [args...] | link | host-tools | state")
 		os.Exit(2)
 	}
 	if err != nil {
