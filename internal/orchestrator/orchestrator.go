@@ -33,6 +33,9 @@ import (
 const (
 	labelSandbox = "zeolite.sandbox" // the sandbox's ID
 	labelRole    = "zeolite.role"    // gatekeeper or workstation
+	// labelACPBridge is on the workstation of a sandbox that was started
+	// with an ACP Bridge.
+	labelACPBridge = "zeolite.acp-bridge"
 )
 
 // ColimaEndpoint is the Docker endpoint of the Colima profile the app

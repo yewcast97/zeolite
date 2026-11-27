@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,7 +20,8 @@ import (
 )
 
 // fakeDocker answers what a build asks of a Docker daemon, and keeps
-// where each build's steps were to run.
+// where each build's steps were to run; and what is asked of it about a
+// container, and to run in one.
 type fakeDocker struct {
 	server *httptest.Server
 
@@ -27,13 +29,43 @@ type fakeDocker struct {
 	// built are the tags that were built, each with the network its
 	// build's steps were to run on.
 	built map[string]string
+	// containers are the containers the daemon has, each by its name
+	// with what an inspection of it answers; execs the commands that
+	// were asked to be run in one, in order; and execExit what the last
+	// of them exited with, once its input ended.
+	containers map[string]string
+	execs      []execAsked
+	execEnded  bool
+	execExit   int
+}
+
+// framedOutput writes what a command printed as Docker frames it where
+// there is no terminal: each piece behind the stream it is of, standard
+// output's being 1, and its length.
+type framedOutput struct{ w io.Writer }
+
+func (f framedOutput) Write(p []byte) (int, error) {
+	header := []byte{1, 0, 0, 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(header[4:], uint32(len(p)))
+	if _, err := f.w.Write(append(header, p...)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// execAsked is a command that was asked to be run in a container.
+type execAsked struct {
+	Container                                  string `json:"-"`
+	User, WorkingDir                           string
+	Cmd, Env                                   []string
+	Tty, AttachStdin, AttachStdout, Privileged bool
 }
 
 var apiVersion = regexp.MustCompile(`^/v[0-9.]+`)
 
 func newFakeDocker(t *testing.T) (*fakeDocker, *Orchestrator) {
 	t.Helper()
-	f := &fakeDocker{built: map[string]string{}}
+	f := &fakeDocker{built: map[string]string{}, containers: map[string]string{}}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Api-Version", "1.52")
 		w.Header().Set("Content-Type", "application/json")
@@ -59,6 +91,45 @@ func newFakeDocker(t *testing.T) (*fakeDocker, *Orchestrator) {
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]string{"Id": "sha256:" + strings.Repeat("0", 64)})
+		case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/json"):
+			name := strings.TrimSuffix(strings.TrimPrefix(path, "/containers/"), "/json")
+			f.mu.Lock()
+			inspected, there := f.containers[name]
+			f.mu.Unlock()
+			if !there {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "No such container: " + name})
+				return
+			}
+			io.WriteString(w, inspected)
+		case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/exec"):
+			asked := execAsked{Container: strings.TrimSuffix(strings.TrimPrefix(path, "/containers/"), "/exec")}
+			json.NewDecoder(r.Body).Decode(&asked)
+			f.mu.Lock()
+			f.execs = append(f.execs, asked)
+			f.execEnded = false
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"Id": "exec1"})
+		case path == "/exec/exec1/start":
+			// The command's streams: what it is sent comes back as what
+			// it printed, until its input ends.
+			io.Copy(io.Discard, r.Body)
+			conn, rw, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer conn.Close()
+			io.WriteString(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+			io.Copy(framedOutput{conn}, rw)
+			f.mu.Lock()
+			f.execEnded = true
+			f.mu.Unlock()
+		case path == "/exec/exec1/json":
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]any{"ID": "exec1", "Running": !f.execEnded, "ExitCode": f.execExit})
 		default:
 			t.Errorf("the orchestrator asked Docker for %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)

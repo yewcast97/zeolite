@@ -325,6 +325,19 @@ func labels(sandboxID, role string) map[string]string {
 	return map[string]string{labelSandbox: sandboxID, labelRole: role}
 }
 
+// workstationLabels are the labels of a sandbox's workstation: the
+// sandbox's and its role, and that the sandbox was started with an ACP
+// Bridge, where it was. The label says how the workstation was started,
+// which nothing in it can change: what the workstation itself holds of
+// its config is the agent's to write.
+func workstationLabels(cfg sandbox.Config) map[string]string {
+	l := labels(cfg.ID, roleWorkstation)
+	if cfg.ACPBridge {
+		l[labelACPBridge] = "true"
+	}
+	return l
+}
+
 // logConfig keeps a container's logging from ever blocking it: a
 // gatekeeper that waited on a stalled log would stop judging its gate.
 var logConfig = container.LogConfig{
@@ -489,7 +502,7 @@ func (o *Orchestrator) startGatekeeper(ctx, podCtx context.Context, p *pod, imag
 	// tun writes on standard output is the Packet stream; that the
 	// device is there it says on standard error.
 	said, saidLine := io.Pipe()
-	packets, err := o.openExecStream(ctx, p.gatekeeper, "0", saidLine, sandboximage.TunPath)
+	packets, err := openExecStream(ctx, o.docker, p.gatekeeper, "0", "", saidLine, sandboximage.TunPath)
 	if err != nil {
 		return "", fmt.Errorf("starting tun: %w", err)
 	}
@@ -800,7 +813,7 @@ func workstationMounts(sandboxID string, packs []pack.Manifest, sharedFolder str
 // the sandbox goes on, and what asks something of the app there is told
 // that the Link is not open.
 func (o *Orchestrator) openLink(ctx, podCtx context.Context, p *pod, serve func(io.ReadWriteCloser)) error {
-	stream, err := o.openExecStream(ctx, p.workstation, sandboximage.WorkstationUser, io.Discard, sandboximage.SupervisorPath, "link")
+	stream, err := openExecStream(ctx, o.docker, p.workstation, sandboximage.WorkstationUser, "", io.Discard, sandboximage.SupervisorPath, "link")
 	if err != nil {
 		return fmt.Errorf("opening the sandbox's Link: %w", err)
 	}
@@ -872,7 +885,7 @@ func (o *Orchestrator) startWorkstation(ctx, podCtx context.Context, p *pod, ima
 			Image:  image,
 			User:   sandboximage.WorkstationUser,
 			Env:    env,
-			Labels: labels(cfg.ID, roleWorkstation),
+			Labels: workstationLabels(cfg),
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode:    container.NetworkMode(namespaceOf(p.gatekeeper)),

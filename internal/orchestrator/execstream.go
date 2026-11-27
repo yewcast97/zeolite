@@ -18,24 +18,29 @@ import (
 // carried by the Docker API, so nothing listens for it and no port of a
 // sandbox is published.
 type execStream struct {
+	// id is the exec's, by which Docker says whether the command ended
+	// and how.
+	id     string
 	stream client.HijackedResponse
 	out    *io.PipeReader
 }
 
-// openExecStream runs a command in a container, as a user, and returns
-// its streams. What the command writes on standard error goes to errOut.
-func (o *Orchestrator) openExecStream(ctx context.Context, container, user string, errOut io.Writer, command ...string) (*execStream, error) {
-	created, err := o.docker.ExecCreate(ctx, container, client.ExecCreateOptions{
+// openExecStream runs a command in a container, as a user and in a
+// folder, the container's own where dir is empty, and returns its
+// streams. What the command writes on standard error goes to errOut.
+func openExecStream(ctx context.Context, docker *client.Client, container, user, dir string, errOut io.Writer, command ...string) (*execStream, error) {
+	created, err := docker.ExecCreate(ctx, container, client.ExecCreateOptions{
 		User:         user,
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
+		WorkingDir:   dir,
 		Cmd:          command,
 	})
 	if err != nil {
 		return nil, err
 	}
-	attached, err := o.docker.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
+	attached, err := docker.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +50,7 @@ func (o *Orchestrator) openExecStream(ctx context.Context, container, user strin
 		_, err := stdcopy.StdCopy(pw, errOut, attached.Reader)
 		pw.CloseWithError(err)
 	}()
-	return &execStream{stream: attached.HijackedResponse, out: pr}, nil
+	return &execStream{id: created.ID, stream: attached.HijackedResponse, out: pr}, nil
 }
 
 func (s *execStream) Read(p []byte) (int, error)  { return s.out.Read(p) }
@@ -68,7 +73,7 @@ func (o *Orchestrator) DialWorkstation(ctx context.Context, sandboxID string, po
 	if p == nil || p.workstation == "" {
 		return nil, fmt.Errorf("the sandbox is not running")
 	}
-	stream, err := o.openExecStream(ctx, p.workstation, sandboximage.WorkstationUser, io.Discard, "socat", "-", "TCP4:127.0.0.1:"+strconv.Itoa(port))
+	stream, err := openExecStream(ctx, o.docker, p.workstation, sandboximage.WorkstationUser, "", io.Discard, "socat", "-", "TCP4:127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
 		return nil, fmt.Errorf("connecting to the workstation: %w", err)
 	}
