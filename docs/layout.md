@@ -2,6 +2,7 @@
 
 ```
 main.go, backend.go     the app: wires the pieces behind the dashboard's Backend
+acpbridge.go            the same executable as a sandbox's ACP Bridge, when an ACP client starts it as one
 internal/sandbox/       core types: a sandbox's config, its validation, its status, what the containers report
 internal/pack/          Capability Pack manifests and the Pack Catalog; builtin/*.yaml
 internal/orchestrator/  everything that talks to Docker
@@ -15,13 +16,14 @@ internal/agentfiles/    what agents wrote on this Mac's disk, deleted: by names,
 internal/carrier/       the app's side of a sandbox's Carrier: the program, embedded, started under the Carrier Wall
 internal/link/          the app's end of a sandbox's Link: reads what a workstation asks, and hands each ask to what answers its kind
 internal/hosttool/      a sandbox's Host Tools: the Host Tool Wall, the GPU Shim, and the launch of a program under them
+internal/acpbridge/     what crosses a sandbox's ACP Bridge: each message of the Agent Client Protocol judged and written anew, paths mapped by their text
 internal/palette/       the app's colors
 internal/cage/          the sodalite cage, turning, as characters on a grid: the Opening's and the Masthead's
 internal/chargrid/      characters drawn into an image, each in a cell of a grid: the icon's and the Masthead's
 internal/dashboard/     the window: MyGo native UI views and their state
 cmd/gatekeeper/         runs in the gatekeeper container: the ruleset, the probe, the lease
 cmd/tun/                in the gatekeeper's image: makes a sandbox's TUN device and moves its packets
-cmd/supervisor/         PID 1 of the workstation; also the MCP servers `macos` and `sandbox`, their bridge, and the workstation's end of the sandbox's Link
+cmd/supervisor/         PID 1 of the workstation; also the MCP servers `macos` and `sandbox`, their bridge, the workstation's end of the sandbox's Link, and what starts an agent for the sandbox's ACP Bridge
 cmd/carrier/            runs on the Mac, one for a sandbox: carries its traffic on sockets bound to an interface; with the Carrier Wall
 cmd/appicon/            draws resources/icon.png: a zeolite's cage in ASCII art, in the palette's colors
 cmd/masthead/           draws docs/masthead.gif, the README's Masthead: the cage turning, and the app's name in italic letters made of characters that tremble
