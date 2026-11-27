@@ -14,9 +14,9 @@ import (
 	"zeolite/internal/sandbox"
 )
 
-// The agent is opencode. The app installs no agent and starts none:
-// these tests install it in a workstation as its user does, by hand,
-// and start it there.
+// The agent is opencode. The app installs no agent, and starts none
+// that its user types: these tests install it in a workstation as its
+// user does, by hand, and start it there.
 
 // agentPackage is the agent the tests install, at one exact version.
 const (
