@@ -105,12 +105,15 @@ const (
 
 // modelConfig is the opencode config of the experiment's agent. It
 // defines the model, which opencode at this version does not know by
-// name. The sandbox is the boundary, so the agent asks no permission
-// inside it, and it never looks for a newer version of itself.
+// name, and chooses it, for an agent that its client starts, where no
+// command line names one. The sandbox is the boundary, so the agent
+// asks no permission inside it, and it never looks for a newer version
+// of itself.
 const modelConfig = `{
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
   "permission": "allow",
+  "model": "` + agentModel + `",
   "provider": {"openrouter": {"models": {"` + agentModelID + `": {}}}}
 }
 `

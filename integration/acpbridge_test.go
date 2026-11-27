@@ -510,18 +510,6 @@ func TestACPBridgeKeepsAnAgentToItsSharedFolder(t *testing.T) {
 	}
 }
 
-// acpModelConfig is the opencode config of the ACP Bridge's experiment:
-// the experiments' model, defined and chosen, since no command line
-// names one to an agent that its client starts.
-const acpModelConfig = `{
-  "$schema": "https://opencode.ai/config.json",
-  "autoupdate": false,
-  "permission": "allow",
-  "model": "` + agentModel + `",
-  "provider": {"openrouter": {"models": {"` + agentModelID + `": {}}}}
-}
-`
-
 // crossedPaths collects every value of a message that the protocol
 // reads as a path: where a tool call is, and the file a diff changes.
 func crossedPaths(v any, name string, into *[]string) {
@@ -544,14 +532,17 @@ func crossedPaths(v any, name string, into *[]string) {
 	}
 }
 
-// The experiment: two agents, each driven by a real model, are started
-// in a sandbox by the sandbox's ACP Bridge and given a job by this
-// test, which is their ACP client: OpenCode, which speaks the protocol
-// itself, and Claude Code, which speaks it by a program of another
-// name. The job is done where the client asked for it, in the Shared
-// Folder; every path the client is told of is in that folder, as this
-// Mac has it; the client is asked for no file and no terminal, and for
-// a permission where the agent wants one; and when the client leaves,
+// The experiment: every agent the app knows to speak the protocol,
+// each driven by a real model, is started in a sandbox by the sandbox's
+// ACP Bridge and given a job by this test, which is its ACP client.
+// Each is installed by its maker's installer, with the program by which
+// it speaks the protocol where that is another, and is sent to
+// OpenRouter as in the test of agents at work, by what its user writes
+// in ~/.bashrc and in its own files: no client names a model to it. The
+// job is done where the client asked for it, in the Shared Folder;
+// every path the client is told of is in that folder, as this Mac has
+// it; the client is asked for no file and no terminal, and for a
+// permission where the agent wants one; and when the client leaves,
 // nothing of the agent is left. The verdicts are the file and what
 // crossed, never what a model says of itself. Whether an agent started
 // so finds the sandbox's own MCP servers, in its MCP Registry, is found
@@ -573,148 +564,184 @@ func TestACPBridgeExperiment(t *testing.T) {
 		return text
 	}
 
-	workstation := orchestrator.WorkstationContainer(cfg.ID)
-	installAgent(t, cfg.ID)
-	if out, code := dockerWith(nil, acpModelConfig, "exec", "-i", workstation, "sh", "-c", "mkdir -p /workspace/.config/opencode && cat > /workspace/.config/opencode/opencode.json"); code != 0 {
-		t.Fatalf("defining the model in the workstation: %s", out)
-	}
-	claude, _ := sandbox.KnownAgent("claude")
-	claudeInstalled := installedByHand(t, cfg.ID, claude) != ""
-	if claudeInstalled {
-		if out, code := inLoginShell(cfg.ID, acpPrograms["claude"]+" 2>&1 | tail -5"); code != 0 {
-			t.Errorf("installing the program by which Claude Code speaks the protocol: %s", out)
-			claudeInstalled = false
+	var agents []sandbox.Agent
+	for _, agent := range sandbox.KnownAgents {
+		if len(agent.ACP) == 0 {
+			continue
 		}
+		waitState(t, cfg.ID, sandbox.StateGateOpen, 60*time.Second)
+		where := installedByHand(t, cfg.ID, agent)
+		if where == "" {
+			continue
+		}
+		out, _ := inLoginShell(cfg.ID, "timeout 20 "+agent.Executable+" --version 2>&1 | head -1")
+		t.Logf("%s is at %s and says of its version: %s", agent.Title, where, trimmed(out))
+		if install, besides := acpPrograms[agent.Executable]; besides {
+			if out, code := inLoginShell(cfg.ID, install+" 2>&1 | tail -5"); code != 0 {
+				t.Errorf("%s: installing the program by which it speaks the protocol: %s", agent.Title, out)
+				continue
+			}
+		}
+		agents = append(agents, agent)
 	}
-	// The key, and what sends Claude Code to a model, are where the
+	// The key, and what sends each agent to a model, are where the
 	// agents' user puts them for an agent that an ACP client starts: in
-	// ~/.bashrc, which the shell an agent is started through reads. They
-	// cross on a command's standard input, and the Home is deleted with
-	// the test's sandbox.
-	lines := append([]string{"export " + keyVariable + "=" + shellQuote(key)}, agentJobs["claude"].environment...)
-	if out, code := dockerWith(nil, strings.Join(lines, "\n")+"\n", "exec", "-i", workstation, "sh", "-c", "umask 077 && cat >> /workspace/.bashrc"); code != 0 {
-		t.Fatalf("giving the agents their key: exit %d (%d bytes said)", code, len(out))
+	// ~/.bashrc, which the shell an agent is started through reads, and
+	// in each agent's own files.
+	tellOfTheModels(t, cfg.ID, key)
+	for _, agent := range agents {
+		if job := agentJobs[agent.Executable]; job.translated {
+			startTranslator(t, cfg.ID, key, job.model)
+		}
 	}
 	baseline := processes(t, cfg.ID)
 
-	for _, agent := range []string{"opencode", "claude"} {
-		if agent == "claude" && !claudeInstalled {
+	for _, agent := range agents {
+		t.Run(agent.Title, func(t *testing.T) {
+			// A model that is cheap does not always do as it is told, and
+			// a gate that locked meanwhile ended its connection: a job
+			// that was not done is given once more, as its user would.
+			const tries = 2
+			wrote := ""
+			for try := 1; try <= tries && wrote != "READY"; try++ {
+				waitState(t, cfg.ID, sandbox.StateGateOpen, 60*time.Second)
+				wrote = givenWorkByACP(t, cfg, folder, agent, baseline, key, redact)
+			}
+			if wrote != "READY" {
+				t.Errorf("%s, driven by %s, left %q in the file it was asked for", agent.Title, agentJobs[agent.Executable].model, wrote)
+			}
+		})
+	}
+}
+
+// givenWorkByACP starts an agent by a sandbox's ACP Bridge, with the
+// test as its client, and gives it a job in a session in the Shared
+// Folder: write a file there, then raise a hand. It fails the test for
+// what crossed that must not, and for anything of the agent left after
+// its client left, and says what the agent left in the file.
+func givenWorkByACP(t *testing.T, cfg sandbox.Config, folder string, agent sandbox.Agent, baseline int, key string, redact func(string) string) string {
+	t.Helper()
+	file := "from-" + agent.Executable + ".txt"
+	inSandbox(cfg.ID, "rm -f "+sandbox.SharedFolderPath+"/"+file)
+	calls := len(updates.mcpCallsOf(cfg.ID))
+
+	c := startBridge(t, cfg, cfg.ID, agent.Executable)
+	c.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},"clientInfo":{"name":"zeolite-test","version":"1"}}}`)
+	initialized, _ := c.answer(1, 2*time.Minute)
+	if initialized.Error != nil {
+		t.Fatalf("%s answered initialize with %s; the bridge said: %s", agent.Title, redact(initialized.raw), c.said)
+	}
+	var said struct {
+		AgentInfo json.RawMessage `json:"agentInfo"`
+	}
+	json.Unmarshal(initialized.Result, &said)
+	t.Logf("%s, started by %q, says of itself: %s", agent.Title, agent.ACP, said.AgentInfo)
+	request, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": map[string]any{"cwd": folder, "mcpServers": []any{}}})
+	c.send(string(request))
+	made, _ := c.answer(2, 2*time.Minute)
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	json.Unmarshal(made.Result, &session)
+	if session.SessionID == "" {
+		t.Fatalf("%s made no session: %s", agent.Title, redact(made.raw))
+	}
+
+	prompt, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": map[string]any{
+		"sessionId": session.SessionID,
+		"prompt": []any{map[string]any{"type": "text", "text": "Create the file " + file + " in the current working directory containing exactly the word READY. " +
+			"Then call the tool raise_hand of the MCP server sandbox once, and then stop."}},
+	}})
+	began := time.Now()
+	c.send(string(prompt))
+	var paths []string
+	kinds := map[string]int{}
+	deadline := time.Now().Add(8 * time.Minute)
+	for answered := false; !answered; {
+		m := c.next(time.Until(deadline))
+		switch {
+		case m.Method == "" && fmt.Sprint(m.ID) == "3":
+			answered = true
+			if m.Error != nil {
+				t.Logf("%s answered the prompt with an error: %s", agent.Title, redact(m.raw))
+			}
+		case m.Method == "session/request_permission":
+			// A user who allows what is asked.
+			var asked struct {
+				Options []struct {
+					OptionID string `json:"optionId"`
+					Kind     string `json:"kind"`
+				} `json:"options"`
+			}
+			json.Unmarshal(m.Params, &asked)
+			choice := ""
+			for _, option := range asked.Options {
+				if strings.HasPrefix(option.Kind, "allow") && choice == "" {
+					choice = option.OptionID
+				}
+			}
+			id, _ := json.Marshal(m.ID)
+			answer, _ := json.Marshal(map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": choice}})
+			c.send(`{"jsonrpc":"2.0","id":` + string(id) + `,"result":` + string(answer) + `}`)
+			kinds["a permission asked"]++
+			crossedPaths(func() (v any) { json.Unmarshal(m.Params, &v); return }(), "", &paths)
+		case m.Method == "session/update":
+			var params struct {
+				Update map[string]any `json:"update"`
+			}
+			json.Unmarshal(m.Params, &params)
+			kinds[fmt.Sprint(params.Update["sessionUpdate"])]++
+			crossedPaths(params.Update, "", &paths)
+		default:
+			t.Errorf("the client of %s was sent %s", agent.Title, redact(m.raw))
+		}
+	}
+	t.Logf("%s, started by %q, driven by %s, answered in %s: the client was told, by kind: %v; and of the paths %v",
+		agent.Title, agent.ACP, agentJobs[agent.Executable].model, time.Since(began).Round(time.Second), kinds, paths)
+
+	// The job is done, in the Shared Folder: read through the sandbox,
+	// and seen on this Mac by its name and its size.
+	out, _ := inSandbox(cfg.ID, "cat "+sandbox.SharedFolderPath+"/"+file+" 2>/dev/null")
+	wrote := trimmed(out)
+	if wrote == "READY" {
+		if info, err := os.Lstat(filepath.Join(folder, file)); err != nil || info.Size() < 5 || info.Size() > 6 {
+			t.Errorf("%s: on this Mac the Shared Folder has no such file of that size: %v", agent.Title, err)
+		}
+	}
+	for _, p := range paths {
+		if p != folder && !strings.HasPrefix(p, folder+"/") {
+			t.Errorf("the client of %s was told of the path %q, which is not in the Shared Folder", agent.Title, p)
+		}
+	}
+	for _, never := range []string{`"method":"fs/`, `"method":"terminal/`, `"_meta"`, key} {
+		if strings.Contains(c.everything(), never) {
+			t.Errorf("what the client of %s was sent holds %s", agent.Title, redact(never))
+		}
+	}
+	// What is found out: whether the agent, started so, called the
+	// sandbox's own server, which is in its MCP Registry and which no
+	// client gave it; and what the server said to an agent that is in no
+	// Terminal Session.
+	raised, answer := 0, ""
+	for _, call := range updates.mcpCallsOf(cfg.ID)[calls:] {
+		if call.Server != sandbox.StateServer {
 			continue
 		}
-		known, _ := sandbox.KnownAgent(agent)
-		waitState(t, cfg.ID, sandbox.StateGateOpen, 60*time.Second)
-		file := "from-" + agent + ".txt"
-		calls := len(updates.mcpCallsOf(cfg.ID))
-
-		c := startBridge(t, cfg, cfg.ID, agent)
-		c.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},"clientInfo":{"name":"zeolite-test","version":"1"}}}`)
-		initialized, _ := c.answer(1, 2*time.Minute)
-		if initialized.Error != nil {
-			t.Fatalf("%s answered initialize with %s; the bridge said: %s", known.Title, redact(initialized.raw), c.said)
+		if call.FromAgent && call.Method == "tools/call" {
+			raised++
 		}
-		request, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": map[string]any{"cwd": folder, "mcpServers": []any{}}})
-		c.send(string(request))
-		made, _ := c.answer(2, 2*time.Minute)
-		var session struct {
-			SessionID string `json:"sessionId"`
+		if !call.FromAgent && raised > 0 && answer == "" {
+			answer = call.Summary
 		}
-		json.Unmarshal(made.Result, &session)
-		if session.SessionID == "" {
-			t.Fatalf("%s made no session: %s", known.Title, redact(made.raw))
-		}
-
-		prompt, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": map[string]any{
-			"sessionId": session.SessionID,
-			"prompt": []any{map[string]any{"type": "text", "text": "Create the file " + file + " in the current working directory containing exactly the word READY. " +
-				"Then call the tool raise_hand of the MCP server sandbox once, and then stop."}},
-		}})
-		c.send(string(prompt))
-		var paths []string
-		kinds := map[string]int{}
-		deadline := time.Now().Add(8 * time.Minute)
-		for answered := false; !answered; {
-			m := c.next(time.Until(deadline))
-			switch {
-			case m.Method == "" && fmt.Sprint(m.ID) == "3":
-				answered = true
-				if m.Error != nil {
-					t.Errorf("%s answered the prompt with an error: %s", known.Title, redact(m.raw))
-				}
-			case m.Method == "session/request_permission":
-				// A user who allows what is asked.
-				var asked struct {
-					Options []struct {
-						OptionID string `json:"optionId"`
-						Kind     string `json:"kind"`
-					} `json:"options"`
-				}
-				json.Unmarshal(m.Params, &asked)
-				choice := ""
-				for _, option := range asked.Options {
-					if strings.HasPrefix(option.Kind, "allow") && choice == "" {
-						choice = option.OptionID
-					}
-				}
-				id, _ := json.Marshal(m.ID)
-				answer, _ := json.Marshal(map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": choice}})
-				c.send(`{"jsonrpc":"2.0","id":` + string(id) + `,"result":` + string(answer) + `}`)
-				kinds["a permission asked"]++
-				crossedPaths(func() (v any) { json.Unmarshal(m.Params, &v); return }(), "", &paths)
-			case m.Method == "session/update":
-				var params struct {
-					Update map[string]any `json:"update"`
-				}
-				json.Unmarshal(m.Params, &params)
-				kinds[fmt.Sprint(params.Update["sessionUpdate"])]++
-				crossedPaths(params.Update, "", &paths)
-			default:
-				t.Errorf("the client of %s was sent %s", known.Title, redact(m.raw))
-			}
-		}
-		t.Logf("%s, started by %q: the client was told, by kind: %v; and of the paths %v", known.Title, known.ACP, kinds, paths)
-
-		// The job is done, in the Shared Folder: read through the
-		// sandbox, and seen on this Mac by its name and its size.
-		if out, _ := inSandbox(cfg.ID, "cat /workspace/shared/"+file+" 2>/dev/null"); trimmed(out) != "READY" {
-			t.Errorf("%s left %q in the file it was asked for", known.Title, trimmed(out))
-		}
-		if info, err := os.Lstat(filepath.Join(folder, file)); err != nil || info.Size() < 5 || info.Size() > 6 {
-			t.Errorf("%s: on this Mac the Shared Folder has no such file of that size: %v", known.Title, err)
-		}
-		for _, p := range paths {
-			if p != folder && !strings.HasPrefix(p, folder+"/") {
-				t.Errorf("the client of %s was told of the path %q, which is not in the Shared Folder", known.Title, p)
-			}
-		}
-		for _, never := range []string{`"method":"fs/`, `"method":"terminal/`, `"_meta"`, key} {
-			if strings.Contains(c.everything(), never) {
-				t.Errorf("what the client of %s was sent holds %s", known.Title, redact(never))
-			}
-		}
-		// What is found out: whether the agent, started so, called the
-		// sandbox's own server, which is in its MCP Registry and which no
-		// client gave it; and what the server said to an agent that is
-		// in no Terminal Session.
-		raised, answer := 0, ""
-		for _, call := range updates.mcpCallsOf(cfg.ID)[calls:] {
-			if call.Server != sandbox.StateServer {
-				continue
-			}
-			if call.FromAgent && call.Method == "tools/call" {
-				raised++
-			}
-			if !call.FromAgent && raised > 0 && answer == "" {
-				answer = call.Summary
-			}
-		}
-		t.Logf("%s, started by %q, called the tool of the sandbox's own MCP server %d times; the server answered: %.200s", known.Title, known.ACP, raised, redact(answer))
-
-		c.in.Close()
-		if status := c.ended(30 * time.Second); status != 0 {
-			t.Errorf("after the client of %s left the bridge ended with %d; it said: %s", known.Title, status, redact(c.said.String()))
-		}
-		waitFor(t, 20*time.Second, "the processes of "+known.Title+" to end after its client left", func() bool { return processes(t, cfg.ID) <= baseline })
 	}
+	t.Logf("%s, started by %q, called the tool of the sandbox's own MCP server %d times; the server answered: %.200s", agent.Title, agent.ACP, raised, redact(answer))
+
+	c.in.Close()
+	if status := c.ended(30 * time.Second); status != 0 {
+		t.Errorf("after the client of %s left the bridge ended with %d; it said: %s", agent.Title, status, redact(c.said.String()))
+	}
+	waitFor(t, 20*time.Second, "the processes of "+agent.Title+" to end after its client left", func() bool { return processes(t, cfg.ID) <= baseline })
+	return wrote
 }
 
 // acpPrograms are the command lines that install the program by which

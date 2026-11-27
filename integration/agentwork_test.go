@@ -3,8 +3,11 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +18,14 @@ import (
 
 // Every agent the app knows is given work, as its user gives it: each
 // installed by hand, told of a model in its own config and environment,
-// and started by its name in a Terminal Session. The models are real,
-// all asked through OpenRouter with the experiments' key, and cheap:
-// each agent is driven by its maker's own cheap model, where its maker
-// makes models, and by the experiments' model otherwise. What each
-// agent needs to be sent to OpenRouter is its maker's documentation's,
-// as read on 22 November 2026, and is here and nowhere in the app.
+// and started by its name in a Terminal Session, or by the ACP Bridge's
+// experiment for an ACP client. The models are real, all asked through
+// OpenRouter with the experiments' key, and cheap: each agent is driven
+// by its maker's own cheap model, where its maker makes models, and by
+// the experiments' model otherwise. What each agent needs to be sent to
+// OpenRouter is its maker's documentation's, as read on 22 November
+// 2026, and for what an ACP client starts, where no command line names
+// a model, on 27 November 2026; it is here and nowhere in the app.
 
 // agentJob is how one agent is given a job with nobody at its screen.
 type agentJob struct {
@@ -62,26 +67,29 @@ var agentJobs = map[string]agentJob{
 		},
 		command: func(prompt string) string { return "claude -p " + prompt + " --dangerously-skip-permissions" },
 	},
-	// Codex takes a provider on its command line: OpenRouter's Responses
-	// API, with the key under the variable named there.
+	// Codex takes its provider and its model on its command line, and
+	// the program by which it speaks the protocol takes them in that
+	// program's variable, which holds the same config as JSON. That
+	// program starts it with full access, as the command line's flag
+	// does: the sandbox is the boundary.
 	"codex": {
-		model: "openai/gpt-6-luna",
+		model: codexModel,
+		environment: []string{
+			"export CODEX_CONFIG=" + shellQuote(codexConfig()),
+			"export INITIAL_AGENT_MODE=agent-full-access",
+		},
 		command: func(prompt string) string {
-			return "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check" +
-				" -c model_provider=openrouter -c model_providers.openrouter.name=OpenRouter" +
-				" -c model_providers.openrouter.base_url=https://openrouter.ai/api/v1" +
-				" -c model_providers.openrouter.env_key=" + keyVariable +
-				" -c model_providers.openrouter.wire_api=responses" +
-				" -m openai/gpt-6-luna " + prompt
+			return "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check " + codexFlags() +
+				" -m " + codexModel + " " + prompt
 		},
 	},
 	// Grok takes a model of its user's in its config, beside the servers
-	// the supervisor wrote there.
+	// the supervisor wrote there, and the default model there too.
 	"grok": {
 		model:      "x-ai/grok-4.3",
 		configFile: ".grok/config.toml",
 		config: "\n[model.openrouter]\nmodel = \"x-ai/grok-4.3\"\nbase_url = \"https://openrouter.ai/api/v1\"\n" +
-			"env_key = \"" + keyVariable + "\"\n",
+			"env_key = \"" + keyVariable + "\"\n\n[models]\ndefault = \"openrouter\"\n",
 		command: func(prompt string) string { return "grok -p " + prompt + " -m openrouter --always-approve" },
 	},
 	// OpenCode's maker makes no model: the experiments' drives it, as it
@@ -107,9 +115,13 @@ var agentJobs = map[string]agentJob{
 		command: func(prompt string) string { return "kimi -p " + prompt },
 	},
 	// Pi knows OpenRouter by the key's variable, and its maker makes no
-	// model either.
+	// model either. Its default model is in its config: without one it
+	// takes the first provider it finds a key for, which may be the
+	// Translator's.
 	"omp": {
-		model: agentModelID,
+		model:      agentModelID,
+		configFile: ".omp/agent/config.yml",
+		config:     "modelRoles:\n  default: " + agentModel + "\n",
 		command: func(prompt string) string {
 			return "omp -p --model " + agentModel + " --auto-approve --allow-home --no-title " + prompt
 		},
@@ -128,6 +140,38 @@ var agentJobs = map[string]agentJob{
 		command:    func(prompt string) string { return "agy -p " + prompt + " --dangerously-skip-permissions" },
 		translated: true,
 	},
+}
+
+// codexModel is the model that drives Codex, and codexProvider is
+// OpenRouter as Codex is told of a provider: its Responses API, with the
+// key under the variable named there.
+const codexModel = "openai/gpt-6-luna"
+
+var codexProvider = map[string]string{
+	"name":     "OpenRouter",
+	"base_url": "https://openrouter.ai/api/v1",
+	"env_key":  keyVariable,
+	"wire_api": "responses",
+}
+
+// codexFlags tell Codex of its provider on its command line.
+func codexFlags() string {
+	flags := "-c model_provider=openrouter"
+	for _, key := range slices.Sorted(maps.Keys(codexProvider)) {
+		flags += " -c model_providers.openrouter." + key + "=" + codexProvider[key]
+	}
+	return flags
+}
+
+// codexConfig is Codex's provider and model as a JSON object of its
+// config.
+func codexConfig() string {
+	config, _ := json.Marshal(map[string]any{
+		"model":           codexModel,
+		"model_provider":  "openrouter",
+		"model_providers": map[string]any{"openrouter": codexProvider},
+	})
+	return string(config)
 }
 
 // translatorPath is where a test puts the Translator in a workstation.

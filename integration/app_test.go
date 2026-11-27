@@ -403,10 +403,7 @@ func agentAtWorkInTheBuiltApp(t *testing.T, a *automation, sandboxID, key string
 	if out, code := dockerWith(nil, "export "+keyVariable+"="+shellQuote(key)+"\n", "exec", "-i", orchestrator.WorkstationContainer(sandboxID), "sh", "-c", "umask 077 && cat >> /workspace/.bashrc"); code != 0 {
 		t.Fatalf("giving the agent its key: exit %d (%d bytes said)", code, len(out))
 	}
-	config := `{"$schema": "https://opencode.ai/config.json", "autoupdate": false, "permission": "allow", "model": "` + agentModel + `", "provider": {"openrouter": {"models": {"` + agentModelID + `": {}}}}}`
-	if out, code := inSandbox(sandboxID, "mkdir -p /workspace/.config/opencode && cat > /workspace/.config/opencode/opencode.json <<'JSON'\n"+config+"\nJSON"); code != 0 {
-		t.Fatalf("writing opencode's config: %s", out)
-	}
+	defineModel(t, sandboxID)
 	// A Pane opened now has a shell that read the key: the agent is
 	// started there, by its name. It stands under the second, half the
 	// page wide: an agent's screen needs the columns.
