@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ func TestKnownAgents(t *testing.T) {
 	}
 	// Each is found by its executable, and nothing else is.
 	for _, a := range KnownAgents {
-		if got, ok := KnownAgent(a.Executable); !ok || got != a {
+		if got, ok := KnownAgent(a.Executable); !ok || !reflect.DeepEqual(got, a) {
 			t.Errorf("%s is not found by its executable: %+v", a.Title, got)
 		}
 	}
@@ -59,6 +60,27 @@ func TestKnownAgents(t *testing.T) {
 	}
 	if got := RegistryEnvironment(); len(got) != 1 || got["OPENCODE_CONFIG"] != "/tmp/zeolite/opencode.json" {
 		t.Errorf("a workstation's environment names the registries %v", got)
+	}
+	// Each speaks ACP by a command of plain words, which no shell reads
+	// as anything else and which is no path: the Agent Executable with
+	// its arguments, or one program of another name. An agent that has
+	// none is not started by an ACP Bridge.
+	word := regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	var speak []string
+	for _, a := range KnownAgents {
+		for _, w := range a.ACP {
+			if !word.MatchString(w) {
+				t.Errorf("%s: %q, of the command by which it speaks ACP, is no plain word", a.Title, w)
+			}
+		}
+		if len(a.ACP) > 1 && a.ACP[0] != a.Executable {
+			t.Errorf("%s speaks ACP by %q: a command with arguments is the agent's own", a.Title, a.ACP)
+		}
+		speak = append(speak, a.Executable+"="+strings.Join(a.ACP, " "))
+	}
+	const wantACP = "claude=claude-agent-acp codex=codex-acp grok=grok agent stdio opencode=opencode acp kimi=kimi acp omp=omp acp agy=agy acp"
+	if got := strings.Join(speak, " "); got != wantACP {
+		t.Errorf("the known agents speak ACP by\n%s\nwant\n%s", got, wantACP)
 	}
 	// The agents known, in their order.
 	var known []string

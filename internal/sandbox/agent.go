@@ -3,14 +3,24 @@ package sandbox
 import "time"
 
 // Agent is an agent the app knows: what the dashboard calls it, its
-// Agent Executable, and where it keeps its MCP registry.
+// Agent Executable, the command by which it speaks ACP, and where it
+// keeps its MCP registry.
 type Agent struct {
 	Title string
 	// Executable is the Agent Executable: the name of the program the
 	// agent's own documentation starts it by. Its user installs it in a
 	// workstation and starts it there, by typing that name in a Terminal
-	// Session; the app does neither.
+	// Session; the app installs none, and starts one only for an ACP
+	// Bridge.
 	Executable string
+	// ACP is the command by which the agent speaks the Agent Client
+	// Protocol on its standard streams, as its maker documents it: the
+	// Agent Executable with its arguments, or a program of another name
+	// that its user installs besides. It is what a sandbox's ACP Bridge
+	// has started in the workstation, and is empty for an agent that is
+	// not known to speak the protocol: an ACP Bridge starts no such
+	// agent.
+	ACP []string
 	// Registry is the file in which the agent looks for MCP servers, and
 	// the shape of a server there, as its maker documents them. A
 	// workstation's supervisor writes the sandbox's servers into it at
@@ -64,30 +74,33 @@ const SupervisorDir = TmpPath + "/zeolite"
 
 // KnownAgents are the agents the app knows, each under the name its
 // own documentation starts it by, with its registry as its maker's
-// documentation had it on 20 November 2026.
+// documentation had it on 20 November 2026, and the command by which
+// it speaks ACP as it had that on 27 November 2026.
 var KnownAgents = []Agent{
-	{Title: "Claude Code", Executable: "claude", Registry: Registry{
+	// Claude Code and Codex speak ACP by a program of another name,
+	// which their user installs besides the agent.
+	{Title: "Claude Code", Executable: "claude", ACP: []string{"claude-agent-acp"}, Registry: Registry{
 		File: ".claude.json", Format: RegistryJSON, Servers: "mcpServers", Type: "stdio",
 	}},
-	{Title: "Codex", Executable: "codex", Registry: Registry{
+	{Title: "Codex", Executable: "codex", ACP: []string{"codex-acp"}, Registry: Registry{
 		File: ".codex/config.toml", Format: RegistryTOML, Servers: "mcp_servers", TimeoutKey: "tool_timeout_sec", TimeoutUnit: time.Second,
 	}},
-	{Title: "Grok", Executable: "grok", Registry: Registry{
+	{Title: "Grok", Executable: "grok", ACP: []string{"grok", "agent", "stdio"}, Registry: Registry{
 		File: ".grok/config.toml", Format: RegistryTOML, Servers: "mcp_servers",
 	}},
 	// OpenCode's own config may hold comments, which no strict reader
 	// takes: the app writes a file of its own, and names it to OpenCode.
-	{Title: "OpenCode", Executable: "opencode", Registry: Registry{
+	{Title: "OpenCode", Executable: "opencode", ACP: []string{"opencode", "acp"}, Registry: Registry{
 		File: SupervisorDir + "/opencode.json", Variable: "OPENCODE_CONFIG", Format: RegistryJSON, Servers: "mcp",
 		Type: "local", CommandList: true, Enabled: true, TimeoutKey: "timeout", TimeoutUnit: time.Millisecond,
 	}},
-	{Title: "Kimi Code", Executable: "kimi", Registry: Registry{
+	{Title: "Kimi Code", Executable: "kimi", ACP: []string{"kimi", "acp"}, Registry: Registry{
 		File: ".kimi-code/mcp.json", Format: RegistryJSON, Servers: "mcpServers",
 	}},
-	{Title: "Pi", Executable: "omp", Registry: Registry{ // oh-my-pi
+	{Title: "Pi", Executable: "omp", ACP: []string{"omp", "acp"}, Registry: Registry{ // oh-my-pi
 		File: ".omp/agent/mcp.json", Format: RegistryJSON, Servers: "mcpServers",
 	}},
-	{Title: "Antigravity", Executable: "agy", Registry: Registry{
+	{Title: "Antigravity", Executable: "agy", ACP: []string{"agy", "acp"}, Registry: Registry{
 		File: ".gemini/config/mcp_config.json", Format: RegistryJSON, Servers: "mcpServers",
 	}},
 }

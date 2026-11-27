@@ -33,6 +33,7 @@ const (
 	FieldPacks             Field = "packs"
 	FieldSharedFolder      Field = "sharedFolder"
 	FieldHostTools         Field = "hostTools"
+	FieldACPBridge         Field = "acpBridge"
 )
 
 // FieldError says what is wrong with one field, in words for the user.
@@ -193,6 +194,12 @@ func (c Config) Validate() []FieldError {
 			add(FieldHostTools, "%s is an Allowed Application twice", name)
 		}
 		applications[name] = true
+	}
+
+	// An agent started by an ACP Bridge works in the sandbox's Shared
+	// Folder, which is the one folder its client and it both have.
+	if c.ACPBridge && c.SharedFolder == "" {
+		add(FieldACPBridge, "an ACP Bridge's agent works in the sandbox's Shared Folder: give the sandbox one")
 	}
 	return errs
 }

@@ -34,6 +34,12 @@ type Config struct {
 	// HostTools says whether the sandbox's agent may run Host Tools, and
 	// what their Wall leaves them besides what it leaves every one.
 	HostTools HostTools `json:"hostTools"`
+
+	// ACPBridge says that the sandbox is given an ACP Bridge: an ACP
+	// client on this Mac may have an agent started in its workstation,
+	// and work with it there. The agent works in the sandbox's Shared
+	// Folder: a sandbox that is given none has no ACP Bridge.
+	ACPBridge bool `json:"acpBridge,omitempty"`
 }
 
 // HostTools is what a sandbox is given of this Mac's programs. They run

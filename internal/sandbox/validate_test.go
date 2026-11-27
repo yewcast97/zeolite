@@ -40,7 +40,11 @@ func TestValidConfigs(t *testing.T) {
 	dual.Gate.ProbePin = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
 	dual.Clock = ClockPolicy{Timezone: TimezoneAuto, TimezoneProbeURL: "https://probe.example.com/timezone"}
 
-	for name, c := range map[string]Config{"gated": gated(), "conditions": conditions, "dual": dual} {
+	// An ACP Bridge is given with a Shared Folder.
+	bridged := gated()
+	bridged.SharedFolder, bridged.ACPBridge = "research", true
+
+	for name, c := range map[string]Config{"gated": gated(), "conditions": conditions, "dual": dual, "bridged": bridged} {
 		if errs := c.Validate(); errs != nil {
 			t.Errorf("%s: %v", name, errs)
 		}
@@ -119,6 +123,7 @@ func TestInvalidFields(t *testing.T) {
 		{"a Shared Folder with a capital", func(c *Config) { c.SharedFolder = "Research" }, FieldSharedFolder},
 		{"a Shared Folder named as the root's marker", func(c *Config) { c.SharedFolder = ".zeolite-shared-folder-root" }, FieldSharedFolder},
 		{"a Shared Folder with a long name", func(c *Config) { c.SharedFolder = strings.Repeat("x", 33) }, FieldSharedFolder},
+		{"an ACP Bridge with no Shared Folder", func(c *Config) { c.ACPBridge = true }, FieldACPBridge},
 	}
 	for _, tt := range tests {
 		c := gated()

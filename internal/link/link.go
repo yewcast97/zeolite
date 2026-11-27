@@ -57,7 +57,7 @@ func Serve(stream io.ReadWriteCloser, h Handlers) error {
 
 	in := bufio.NewReaderSize(stream, 64<<10)
 	for {
-		line, err := readLine(in, sandbox.LinkMaxLine)
+		line, err := sandbox.ReadLine(in, sandbox.LinkMaxLine)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -135,27 +135,4 @@ func (h Handlers) work(r sandbox.LinkRequest) (work func(context.Context) sandbo
 		}, ""
 	}
 	return nil, "a call of this kind is not answered"
-}
-
-// readLine reads one line, without its end, and fails on one longer
-// than max.
-func readLine(in *bufio.Reader, max int) ([]byte, error) {
-	var line []byte
-	for {
-		part, err := in.ReadSlice('\n')
-		line = append(line, part...)
-		if len(line) > max {
-			return nil, fmt.Errorf("an ask longer than %d bytes", max)
-		}
-		switch {
-		case err == nil:
-			return line[:len(line)-1], nil
-		case errors.Is(err, bufio.ErrBufferFull):
-			continue
-		case errors.Is(err, io.EOF) && len(line) > 0:
-			return line, nil
-		default:
-			return nil, err
-		}
-	}
 }
