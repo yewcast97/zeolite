@@ -276,6 +276,10 @@ func (b *fakeBackend) browse(tabs ...viewport.BrowserTab) {
 
 func (b *fakeBackend) Runtime() Runtime { return b.runtime }
 
+func (b *fakeBackend) ACPBridgeCommand(sandboxID, agent string) string {
+	return "/Applications/zeolite.app/Contents/MacOS/zeolite acp-bridge " + sandboxID + " " + agent
+}
+
 func (b *fakeBackend) lastSaved() []sandbox.Config {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1236,19 +1240,54 @@ func TestStartRefusesAnInvalidConfig(t *testing.T) {
 	}
 }
 
-// No sandbox is paired with an agent, and the app starts none: a sandbox
-// is started as it is, its page offers no agent, and its config names
-// none. An agent is what its user types in a Pane.
+// No sandbox is paired with an agent, and a start starts none: a sandbox
+// is started as it is, its page offers no agent to choose, and its
+// config names none. An agent is what its user types in a Pane, or what
+// an ACP client names to the sandbox's ACP Bridge: the Setup names the
+// agents only as the controls that copy that command, each an agent's
+// glyph with no word beside it.
 func TestASandboxIsPairedWithNoAgent(t *testing.T) {
 	h := newHarness(t, []sandbox.Config{gated("s1", "Research")})
-	for _, a := range sandbox.KnownAgents {
-		if h.tt.HasText(a.Title) {
-			t.Errorf("the Setup offers %s: %q", a.Title, h.tt.Texts())
+	// named are the texts and labels of the window that name an agent.
+	named := func() []string {
+		var texts []string
+		for _, text := range h.tt.Texts() {
+			for _, a := range sandbox.KnownAgents {
+				if strings.Contains(text, a.Title) {
+					texts = append(texts, text)
+					break
+				}
+			}
+		}
+		return texts
+	}
+	names := func(when string) {
+		t.Helper()
+		if got := named(); len(got) != 0 {
+			t.Errorf("%s the Setup names an agent: %q", when, got)
+		}
+		if h.count("Agent") != 0 {
+			t.Errorf("%s the Setup speaks of an agent: %q", when, h.tt.Texts())
 		}
 	}
-	if h.count("Agent") != 0 {
-		t.Errorf("the Setup speaks of an agent: %q", h.tt.Texts())
+	names("at first")
+	// With an ACP Bridge the agents are there as glyphs: each is named
+	// by what its control is called, for whoever does not see it or
+	// rests on it, and by nothing else.
+	h.giveFolder("research")
+	h.click(acpBridgeLabel)
+	var want []string
+	for _, a := range sandbox.KnownAgents {
+		if len(a.ACP) > 0 {
+			want = append(want, copyCommandFor+a.Title)
+		}
 	}
+	if got := named(); !slices.Equal(got, want) || h.count("Agent") != 0 {
+		t.Errorf("with an ACP Bridge the Setup names agents as %q, want only the controls %q", got, want)
+	}
+	h.click(acpBridgeLabel)
+	h.giveFolder(sharedFolderNone)
+	names("without one again")
 	if told := h.told("Start"); !strings.Contains(told, "|Start|") && !strings.HasSuffix(told, "|Start") {
 		t.Errorf("Start says %s", told)
 	}
@@ -1641,6 +1680,124 @@ func TestHostToolsInTheSetup(t *testing.T) {
 	h.click("Save")
 	h.settle("the config to be saved again", func() bool { return len(h.backend.saved) == saves+2 })
 	if got := h.backend.lastSaved()[0]; got.SharedFolder != "" || !reflect.DeepEqual(got.HostTools, sandbox.HostTools{}) {
+		t.Errorf("with no Shared Folder again, saved %+v", got)
+	}
+}
+
+// A sandbox's ACP Bridge is a switch of its Setup, under its Shared
+// Folder, which it needs: switched on, it shows a control for each
+// agent that speaks the protocol, the agent's glyph, which copies the
+// command an ACP client starts in that agent's place. What it lets in
+// and what it does not keep out is said behind its glyph.
+func TestACPBridgeInTheSetup(t *testing.T) {
+	cfg := gated("s1", "Research")
+	d := newDraft(cfg, nil)
+	if d.acpBridge {
+		t.Errorf("a new sandbox's form gives it an ACP Bridge: %+v", d)
+	}
+	// Set while the sandbox is given no Shared Folder, it is not the
+	// sandbox's.
+	d.acpBridge = true
+	if back, errs := d.config(cfg); len(errs) != 0 || back.ACPBridge {
+		t.Errorf("with no Shared Folder the sandbox is given an ACP Bridge (%v)", errs)
+	}
+	d.folderChoice = "research"
+	back, errs := d.config(cfg)
+	if len(errs) != 0 || !back.ACPBridge || len(back.Validate()) != 0 {
+		t.Errorf("in a Shared Folder the sandbox's ACP Bridge is %v (%v, %v)", back.ACPBridge, errs, back.Validate())
+	}
+	if again := newDraft(back, nil); !again.acpBridge {
+		t.Errorf("a sandbox given an ACP Bridge shows %+v", again)
+	}
+	// It is the sandbox's with or without Host Tools.
+	if back.HostTools.Enabled {
+		t.Errorf("an ACP Bridge gave the sandbox Host Tools: %+v", back.HostTools)
+	}
+	// Switching it starts a running sandbox again.
+	without := back
+	without.ACPBridge = false
+	if sameStart(back, without) {
+		t.Error("a sandbox with an ACP Bridge and one without start the same")
+	}
+
+	h := newHarness(t, []sandbox.Config{cfg})
+	if h.tt.HasText(acpBridgeLabel) {
+		t.Fatalf("with no Shared Folder the Setup offers an ACP Bridge: %q", h.tt.Texts())
+	}
+	h.giveFolder("research")
+	if !h.tt.HasText(acpBridgeLabel) || !h.tt.HasText("ACP Bridge") {
+		t.Fatalf("with a Shared Folder the Setup shows %q", h.tt.Texts())
+	}
+	texts := h.told("About ACP Bridge")
+	for _, want := range []string{
+		"an editor such as Zed", "Each glyph under it copies a command", "in this Shared Folder",
+		"Install the agent there first, and log in to it, in a Terminal Session", "claude-agent-acp and codex-acp",
+		"a session in any other folder is refused",
+		"none of the editor's files, no terminal of this Mac, none of the editor's MCP servers, and no path of this Mac outside this folder",
+		"What the editor does with what an agent says is the editor's", "by none of the sandbox's ways out", "settings an editor reads among it",
+		"No Pane shows an agent started so", "starts a running sandbox again",
+	} {
+		if !strings.Contains(texts, want) {
+			t.Errorf("what is said of the ACP Bridge lacks %q: %s", want, texts)
+		}
+	}
+	// The words the glossary keeps from it, and the one the window never
+	// says for a way out.
+	for _, never := range []string{"proxy", "gateway", "relay", "remote agent", "agent server", "connector", "adapter", "interface"} {
+		if strings.Contains(strings.ToLower(acpBridgeHelp+acpBridgeLabel), never) {
+			t.Errorf("what is said of the ACP Bridge says %q", never)
+		}
+	}
+	h.park()
+
+	// Until it is switched on, nothing copies a command.
+	speaks := 0
+	for _, a := range sandbox.KnownAgents {
+		if err := h.tt.Click(copyCommandFor + a.Title); err == nil {
+			t.Errorf("without an ACP Bridge the Setup copies the command for %s", a.Title)
+		}
+		if len(a.ACP) > 0 {
+			speaks++
+		}
+	}
+	if speaks == 0 {
+		t.Fatal("no known agent speaks the protocol: the test would prove little")
+	}
+	h.click(acpBridgeLabel)
+	// Each agent that speaks the protocol has its control, which is its
+	// glyph and copies the backend's command for it.
+	for _, a := range sandbox.KnownAgents {
+		if len(a.ACP) == 0 {
+			if err := h.tt.Click(copyCommandFor + a.Title); err == nil {
+				t.Errorf("the Setup copies a command for %s, which does not speak the protocol", a.Title)
+			}
+			continue
+		}
+		if _, drawn := agentGlyphs[a.Executable]; !drawn {
+			t.Errorf("%s has no glyph to copy its command by", a.Title)
+		}
+		h.tt.SetClipboard("")
+		h.click(copyCommandFor + a.Title)
+		if got, want := h.tt.Clipboard(), h.backend.ACPBridgeCommand("s1", a.Executable); got != want || !strings.HasSuffix(got, " acp-bridge s1 "+a.Executable) {
+			t.Errorf("the control for %s copied %q, want %q", a.Title, got, want)
+		}
+	}
+	saves := len(h.backend.saved)
+	h.click("Save")
+	h.settle("the config to be saved", func() bool { return len(h.backend.saved) == saves+1 })
+	if got := h.backend.lastSaved()[0]; got.SharedFolder != "research" || !got.ACPBridge || got.HostTools.Enabled {
+		t.Errorf("saved %+v", got)
+	}
+
+	// Given no Shared Folder again, the sandbox has no ACP Bridge, and
+	// its switch is not shown.
+	h.giveFolder(sharedFolderNone)
+	if h.tt.HasText(acpBridgeLabel) {
+		t.Errorf("with no Shared Folder the Setup still offers an ACP Bridge: %q", h.tt.Texts())
+	}
+	h.click("Save")
+	h.settle("the config to be saved again", func() bool { return len(h.backend.saved) == saves+2 })
+	if got := h.backend.lastSaved()[0]; got.SharedFolder != "" || got.ACPBridge {
 		t.Errorf("with no Shared Folder again, saved %+v", got)
 	}
 }

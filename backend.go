@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -347,6 +348,18 @@ func (b *backend) Applications() []string {
 		return nil
 	}
 	return names
+}
+
+// ACPBridgeCommand is the command line by which an ACP client has an
+// agent started in a sandbox: this program, by its own path, as the
+// sandbox's ACP Bridge. Where the program's path is not known, its name
+// stands for it.
+func (b *backend) ACPBridgeCommand(sandboxID, agent string) string {
+	executable, err := os.Executable()
+	if err != nil {
+		executable = configstore.DirName
+	}
+	return acpBridgeCommandLine(executable, sandboxID, agent)
 }
 
 // SharedFolders lists the Shared Folders on this Mac's disk, by name.

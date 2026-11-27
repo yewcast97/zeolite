@@ -78,6 +78,9 @@ type draft struct {
 	// applications are the rows of the sandbox's Allowed Applications,
 	// kept in the same way.
 	applications []*applicationDraft
+	// acpBridge is whether the sandbox is given an ACP Bridge, kept in
+	// the same way: its agent works in the Shared Folder.
+	acpBridge bool
 }
 
 // interfaceDraft is one row of the Allowed Interfaces. Its ID is its
@@ -157,6 +160,7 @@ func newDraft(cfg sandbox.Config, packs []pack.Manifest) *draft {
 		hostTools:        cfg.HostTools.Enabled,
 		hostGPU:          cfg.HostTools.GPU,
 		hostMacName:      cfg.HostTools.MacName,
+		acpBridge:        cfg.ACPBridge,
 	}
 	if cfg.Clock.Timezone == sandbox.TimezoneAuto {
 		d.timezone = timezoneOfExit
@@ -286,6 +290,8 @@ func (d *draft) config(base sandbox.Config) (sandbox.Config, []sandbox.FieldErro
 			cfg.HostTools.Applications = append(cfg.HostTools.Applications, application.name)
 		}
 	}
+	// An ACP Bridge's agent works in the Shared Folder too.
+	cfg.ACPBridge = cfg.SharedFolder != "" && d.acpBridge
 	return cfg, errs
 }
 
@@ -642,6 +648,15 @@ const (
 	hostGPUHelp             = "Adds this Mac's GPU to the Wall, with the system's shader compiler and its hardware video encoder and decoder: what Metal and VideoToolbox need. Without it a program works on the CPU. Blender needs it even to start."
 	allowedApplicationsHelp = "The folders of /Applications that the sandbox's Host Tools read and run. Of any other the Wall tells them nothing, not even whether it is installed, and it lists none. Xcode is one of them: a sandbox that is not given it compiles with the command line tools, where this Mac has them. A link in /Applications is not offered: where it leads is not the Wall's to open."
 	hostMacNameHelp         = "Adds this Mac's name to the Wall. Without it uname fails, and with it whatever asks the platform's name: Python's platform module, numpy, Blender, the Swift compiler. The name often holds its owner's: give this Mac a plain one in System Settings, under Sharing, if that matters."
+)
+
+// What the Setup says of a sandbox's ACP Bridge: the words beside its
+// switch, what a control that copies its command is called, before the
+// agent's name, and what there is to know of it.
+const (
+	acpBridgeLabel = "Let an editor on this Mac work with an agent here"
+	copyCommandFor = "Copy Command for "
+	acpBridgeHelp  = "Lets an ACP client on this Mac, an editor such as Zed, work with an agent in this sandbox. Each glyph under it copies a command: give it to the editor to start in that agent's place, and the app starts the agent in the workstation, in this Shared Folder. Install the agent there first, and log in to it, in a Terminal Session; Claude Code and Codex speak the protocol by a program of their own, claude-agent-acp and codex-acp, to install besides. Open a folder of this Shared Folder in the editor, by its path here: a session in any other folder is refused. The agent is given none of the editor's files, no terminal of this Mac, none of the editor's MCP servers, and no path of this Mac outside this folder. What the editor does with what an agent says is the editor's: an address it fetches or opens for an agent is reached from this Mac, by none of the sandbox's ways out, and the folder holds what agents wrote, settings an editor reads among it. No Pane shows an agent started so. Switching this starts a running sandbox again."
 )
 
 // packNote says, beside a pack's checkbox, what enabling it means.

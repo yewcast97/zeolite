@@ -13,7 +13,8 @@ import (
 // main package implements it over Docker; tests implement it in memory.
 //
 // Its methods may be slow and are called off the main thread, except
-// Packs, Interfaces, Validate and Runtime, which must answer at once.
+// Packs, Interfaces, Validate, Runtime and ACPBridgeCommand, which must
+// answer at once.
 type Backend interface {
 	// Packs lists the Capability Packs a sandbox can enable.
 	Packs() []pack.Manifest
@@ -66,6 +67,10 @@ type Backend interface {
 	// sandbox as they are now, in the browser's order: the one last used
 	// first.
 	BrowserTabs(sandboxID string, p pack.Manifest) ([]viewport.BrowserTab, error)
+	// ACPBridgeCommand is the command line by which an ACP client on
+	// this Mac has an agent, named by its Agent Executable, started in a
+	// sandbox by the sandbox's ACP Bridge: what the Setup copies.
+	ACPBridgeCommand(sandboxID, agent string) string
 	// Runtime says what, if anything, is wrong where sandboxes run, and
 	// where the Shared Folders are.
 	Runtime() Runtime

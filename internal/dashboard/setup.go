@@ -133,6 +133,30 @@ func (v *sandboxView) setupView(c *ui.Context) {
 								}
 							})
 						}).Error(errorOn(v.errs, sandbox.FieldHostTools))
+						// An ACP Bridge's agent works there too. Its
+						// command names the agent to start: there is a
+						// control for each that speaks the protocol,
+						// which is that agent's glyph.
+						ui.Field(c, "ACP Bridge", func() {
+							ui.Column(c).Gap(t.Space(1)).Children(func() {
+								row("ACP Bridge", acpBridgeHelp, ui.Center, func() {
+									c.Key("acp-bridge")
+									ui.Checkbox(c, &d.acpBridge, acpBridgeLabel)
+								})
+								if d.acpBridge {
+									row("", "", ui.Center, func() {
+										for _, agent := range sandbox.KnownAgents {
+											if len(agent.ACP) == 0 {
+												continue
+											}
+											if glyphButton(c, "acp-bridge-copy-"+agent.Executable, agentGlyphs[agent.Executable], copyCommandFor+agent.Title).Clicked() {
+												c.Services().WriteClipboard(v.d.backend.ACPBridgeCommand(v.id, agent.Executable))
+											}
+										}
+									})
+								}
+							})
+						}).Error(errorOn(v.errs, sandbox.FieldACPBridge))
 					}
 				})
 
