@@ -138,7 +138,7 @@ var sendsProbes = map[string]bool{"cmd/gatekeeper": true, "internal/hostwatch": 
 var deletesAgentFiles = map[string]bool{"internal/sharedfolder": true, "internal/hosttool": true}
 
 // Only the packages listed start a program. The app starts two kinds
-// for a sandbox: its Carrier, under the Carrier Wall, which runs nothing
+// on this Mac for a sandbox: its Carrier, under the Carrier Wall, which runs nothing
 // of the agent's, and its Host Tools, under the Host Tool Wall; the
 // other programs it starts are the system's own, ipconfig and
 // networksetup, which the Host Watchdog asks about this Mac. Only the

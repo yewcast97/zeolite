@@ -208,7 +208,7 @@ func (b *backend) Interfaces() []dashboard.Interface {
 // carry starts a sandbox's Carrier on its Packet stream, under the
 // Carrier Wall. It runs nothing of the agent's. What the agent asks to
 // run on this Mac is a Host Tool, under the Host Tool Wall: those two
-// are what the app starts for a sandbox.
+// are what the app starts on this Mac for a sandbox.
 func (b *backend) carry(name string) func(sandbox.CarrierConfig, io.ReadWriteCloser, func(sandbox.CarrierReport), func(error)) (orchestrator.Carrier, error) {
 	return func(cfg sandbox.CarrierConfig, stream io.ReadWriteCloser, report func(sandbox.CarrierReport), ended func(error)) (orchestrator.Carrier, error) {
 		if b.noCarrier != nil {
@@ -420,8 +420,8 @@ func (b *backend) close() {
 }
 
 // OpenTerminalSession starts a login shell in a sandbox's workstation.
-// The app installs no agent there and starts none: its user does both,
-// in that shell.
+// The app installs no agent there, and starts none in a session: its
+// user does both, in that shell.
 func (b *backend) OpenTerminalSession(sandboxID string) (dashboard.TerminalConn, error) {
 	orch, err := b.orchestrator()
 	if err != nil {

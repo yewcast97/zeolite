@@ -22,17 +22,24 @@ import (
 	"zeolite/internal/sharedfolder"
 )
 
-// dataDir is the app's data directory: ZEOLITE_DATA_DIR when it is set, so
-// that a test run does not touch the user's sandboxes, and else the one
-// configstore names. The UI toolkit is told the same directory and the
-// same name, so that the app's data is in one place.
+// dataDirPath is where the app's data directory is: ZEOLITE_DATA_DIR
+// when it is set, so that a test run does not touch the user's
+// sandboxes, and else the one configstore names. It makes nothing and
+// changes nothing there.
+func dataDirPath() (string, error) {
+	if dir := os.Getenv("ZEOLITE_DATA_DIR"); dir != "" {
+		return dir, nil
+	}
+	return configstore.Dir()
+}
+
+// dataDir is the app's data directory, made for the user alone. The UI
+// toolkit is told the same directory and the same name, so that the
+// app's data is in one place.
 func dataDir() (string, error) {
-	dir := os.Getenv("ZEOLITE_DATA_DIR")
-	if dir == "" {
-		var err error
-		if dir, err = configstore.Dir(); err != nil {
-			return "", err
-		}
+	dir, err := dataDirPath()
+	if err != nil {
+		return "", err
 	}
 	mygo.App.SetName(configstore.DirName)
 	mygo.App.SetPath(mygo.PathUserData, dir)
@@ -145,6 +152,13 @@ func keepNoSmaller(win minimumSizer, width, height int) {
 }
 
 func main() {
+	// Started by an ACP client in an agent's place, the program is a
+	// sandbox's ACP Bridge: it is that and nothing of the app, before
+	// anything of the window is asked for.
+	if len(os.Args) > 1 && os.Args[1] == acpBridgeCommand {
+		os.Exit(acpBridge(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	// The window is dark whatever the system's appearance is: its colors
 	// are the palette's.
 	mygo.Theme.SetSource(mygo.ThemeDark)

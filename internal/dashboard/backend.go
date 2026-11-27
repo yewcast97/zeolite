@@ -52,7 +52,7 @@ type Backend interface {
 	ShowSharedFolder(name string)
 	// OpenTerminalSession starts a Terminal Session in a sandbox's
 	// workstation: a login shell. What runs in it from there, its user
-	// types: the app installs no agent and starts none.
+	// types: the app installs no agent, and starts none in a session.
 	OpenTerminalSession(sandboxID string) (TerminalConn, error)
 	// OpenViewport opens the Viewport Stream of a pack in a sandbox, on
 	// the Browser Tab of an ID, or on the browser's first where the ID
