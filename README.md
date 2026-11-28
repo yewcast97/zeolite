@@ -8,7 +8,7 @@ A macOS app that keeps AI agents in Docker sandboxes and shows them all in one w
 2. **The interface and the exit address you choose.** A sandbox leaves this Mac by the interfaces you allow it (Wi-Fi, Ethernet, a tunnel) and only while a probe sees it at an exit address you expect there. Seen anywhere else, or not seen at all, its gate locks and nothing leaves. See [how the gate holds, and what it does not promise](docs/gate.md).
 3. **Host Tools behind a wall.** Where you allow it, a sandbox's agent runs programs of this Mac, with its GPU if you say so. What can work without a screen or a network runs, from compilers and app frameworks to ffmpeg, Blender and game engines: the system's own and Homebrew's with no list to keep, and of `/Applications` what you name. Each runs under a Seatbelt profile that lets it read that software and write the sandbox's Shared Folder, and nothing else: no file of yours, no network, no other program. See [Host Tools](docs/host-tools.md).
 
-You install agents yourself, in a sandbox's terminal, and start them there by typing, or from an editor on this Mac through the sandbox's ACP Bridge. [The window](docs/window.md) shows each sandbox's state at a glance, and puts first the ones that need you.
+You install agents yourself, in a sandbox's terminal, and start them there by typing, or from an ACP client on this Mac, such as an editor, through the sandbox's ACP Bridge. [The window](docs/window.md) shows each sandbox's state at a glance, and puts first the ones that need you.
 
 ## Setup
 

@@ -1730,11 +1730,11 @@ func TestACPBridgeInTheSetup(t *testing.T) {
 	}
 	texts := h.told("About ACP Bridge")
 	for _, want := range []string{
-		"an editor such as Zed", "Each glyph under it copies a command", "in this Shared Folder",
+		"an editor such as Zed or any other program that speaks the protocol", "give it to the client to start in that agent's place", "Each glyph under it copies a command", "in this Shared Folder",
 		"Install the agent there first, and log in to it, in a Terminal Session", "claude-agent-acp and codex-acp",
 		"a session in any other folder is refused",
-		"none of the editor's files, no terminal of this Mac, none of the editor's MCP servers, and no path of this Mac outside this folder",
-		"What the editor does with what an agent says is the editor's", "by none of the sandbox's ways out", "settings an editor reads among it",
+		"none of the client's files, no terminal of this Mac, none of the client's MCP servers, and no path of this Mac outside this folder",
+		"What the client does with what an agent says is the client's", "by none of the sandbox's ways out", "settings an editor reads among it",
 		"No Pane shows an agent started so", "starts a running sandbox again",
 	} {
 		if !strings.Contains(texts, want) {

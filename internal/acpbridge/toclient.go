@@ -14,11 +14,13 @@ func (b *bridge) resultToClient(method string, v any) (object, bool) {
 	out := object{}
 	switch method {
 	case methodInitialize:
-		version, ok := whole(r, "protocolVersion")
-		if !ok || version > 0xffff {
+		// An agent that speaks no version the bridge does answers with
+		// another: the client is not told that one, by which it would
+		// go on to speak what the bridge does not pass.
+		if version, ok := whole(r, "protocolVersion"); !ok || version != protocolVersion {
 			return nil, false
 		}
-		out["protocolVersion"] = version
+		out["protocolVersion"] = protocolVersion
 		capabilities, _ := member(r, "agentCapabilities")
 		out["agentCapabilities"] = agentCapabilities(capabilities)
 		methods, _ := items(r, "authMethods")

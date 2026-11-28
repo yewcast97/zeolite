@@ -260,11 +260,12 @@ func TestWhatAClientCallsCrossesRebuilt(t *testing.T) {
 
 // An agent's answer that is not the method's is not passed: the client
 // is answered by the bridge, in the app's words, so that its request
-// does not wait for ever. An error the agent answers with crosses
-// rebuilt.
+// does not wait for ever. So is an agent's answer that it speaks
+// another version of the protocol than the bridge asked it for. An
+// error the agent answers with crosses rebuilt.
 func TestAnAnswerThatIsNotTheMethodsIsNotPassed(t *testing.T) {
 	for method, answers := range map[string][]string{
-		"initialize":                {`{}`, `{"protocolVersion":"1"}`, `{"protocolVersion":70000}`, `{"protocolVersion":1.5}`, `null`, `[]`},
+		"initialize":                {`{}`, `{"protocolVersion":"1"}`, `{"protocolVersion":0}`, `{"protocolVersion":2}`, `{"protocolVersion":70000}`, `{"protocolVersion":1.5}`, `null`, `[]`},
 		"session/new":               {`{}`, `{"sessionId":7}`, `null`, `"s1"`},
 		"session/list":              {`{}`, `{"sessions":{}}`},
 		"session/prompt":            {`{}`, `{"stopReason":null}`, `null`},

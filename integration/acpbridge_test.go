@@ -25,7 +25,7 @@ import (
 
 // A sandbox's ACP Bridge is the app's own executable, started by an ACP
 // client in an agent's place. These tests are that client: they build
-// the executable as it is shipped, start it as an editor would, with a
+// the executable as it is shipped, start it as an ACP client would, with a
 // data directory of their own, and speak the Agent Client Protocol on
 // its standard streams, against a sandbox the harness started.
 
@@ -43,8 +43,8 @@ var theApp = sync.OnceValues(func() (string, error) {
 	return binary, nil
 })
 
-// macMarker is a variable of the bridge's own environment, as an editor
-// would leave one there: none of it may reach the workstation.
+// macMarker is a variable of the bridge's own environment, as an ACP
+// client would leave one there: none of it may reach the workstation.
 const macMarker = "ZEOLITE_TEST_OF_THIS_MAC"
 
 // acpClient is a test that is an ACP client: it started the bridge, and
